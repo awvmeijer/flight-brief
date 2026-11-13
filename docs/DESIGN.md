@@ -383,7 +383,7 @@ From the recon's list, in the order they cost time. Details and exact wording ar
 - **A decode test on a Linux runner gates the Phase 2 jobs.**
 - **Tomorrow.io headroom gates only its own line in Phase 3.**
 - **US-wide pilot-report collection gates US scoring east of 110°W in Phase 5.** AWC keeps 30 days, so starting late loses data.
-- **The recon's measurement scripts and results gate the scorecard check.** They sit in the recon session's notes folder and must be copied into this repo.
+- **The recon's measurement scripts and results are in `docs/recon/`.** The scorecard check re-runs them.
 - **Real commits or a manual re-enable every 60 days keep the scheduled jobs alive** once development slows.
 
 ## Verification (how to test it end to end)
@@ -398,7 +398,7 @@ From the recon's list, in the order they cost time. Details and exact wording ar
 - **Late jobs:** with a tile heartbeat two runs old, the page shows "source stale" and still renders.
 - **Budget:** exhaust the ledger in a test; the page shows TAF only with a note.
 - **Page:** render from a fixture and check with `/browse` at phone and desktop widths.
-- **Scorecard:** re-run the recon's measurement through the verification job and land inside its interval (AUC 0.74 to 0.79 for the index within 0.5 degree); hand-check 10 matches against raw report text. The measurement's scripts and its one-row-per-report results are in the recon session's notes folder, not in this repo, so they must be copied in before this check can run.
+- **Scorecard:** re-run the recon's measurement through the verification job and land inside its interval (AUC 0.74 to 0.79 for the index within 0.5 degree); hand-check 10 matches against raw report text. The measurement's scripts and its one-row-per-report results are in `docs/recon/`.
 - **Live:** Anthony's own next flight, briefed before departure, compared after landing.
 
 ## The Assignment

@@ -403,4 +403,4 @@ Research agent, from docs.github.com on 12 November 2026. I re-fetched the event
 
 - **Requests:** aviationweather.gov about 30 calls, 2 s apart. NOMADS about 45 calls, 2 to 3 s apart. AWS S3 about 2,400 byte-range calls for the skill measurement. adsbdb 12 calls. adsb.lol 9 calls, 7 of them metered.
 - **Not done:** no signup, no form, no key requested, no `.env` read. Both existing repositories were read only (`docs/RECON.md`, `config/settings.toml`, `data/snapshots/pirep`).
-- **Scripts** were throwaway and are not part of any repository; copies, and the one-row-per-report results of the skill measurement, are in the session's shared notes folder under `flight-brief-recon-scripts/`. Nothing else was kept from the GRIB files.
+- **Scripts** were throwaway. They and the one-row-per-report results of the skill measurement are in `docs/recon/`, copied into this repository on 13 November 2026. Nothing else was kept from the GRIB files.
