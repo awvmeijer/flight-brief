@@ -34,7 +34,7 @@ No product code was written, no repository created, nothing pushed. Probes were 
 | (a) Public US-only GTG grid | **Confirmed** (not in the design) | Real turbulence forecast, keyless, contiguous US, 18 h horizon |
 | (b) Flight resolve | **Confirmed with conditions** | Times need a paid or limited API; adsbdb's route data may not be copied; no rule maps a flight number to a callsign |
 | (c) Tomorrow.io terms | **Needs Anthony's action** | Legal and pricing pages are behind a bot check; attribution is clear, commercial use on the free key is probably prohibited, no price is published |
-| (d) Scoring method | **Confirmed**, with a different unit than the design's | Score per pilot report, not per route-hour; only the US and the North Pacific have enough reports |
+| (d) Scoring method | **Confirmed**, with a different unit than the design's | Score per pilot report, not per route-hour; of the three boxes collected, only the US and the North Pacific have enough reports |
 | (e) US coverage | **Confirmed**, plus a change | `isigmet` omits US domestic SIGMETs; a new `sigmet` endpoint has both, and `isigmet` is flagged deprecated |
 | (f) GitHub Actions cron | **Confirmed with conditions** | Free and capable enough; timing is not reliable, and the acceptable-use wording is a grey area |
 
@@ -233,7 +233,7 @@ Three levels: **docs** (read live on docs.tomorrow.io, the quotes below re-check
 
 ### Verdict
 
-**Confirmed that a scorecard is possible, with a different unit than the design proposes, and only in two regions.**
+**Confirmed that a scorecard is possible, with a different unit than the design proposes, and, within the three boxes the store collects, only in two regions.** Europe, the Atlantic and the US east of 110°W were never collected and are unmeasured.
 
 ### What the store holds (measured)
 
@@ -287,7 +287,7 @@ In the design's window, about half of the verifiable US route-hours have a moder
 
 ### Proposal
 
-- **Region.** Score the contiguous US and the North Pacific corridor (US West coast, Alaska, Hawaii, Japan). Everything else is printed as "not scored: fewer than 2 reports a day mention turbulence". The store covers the US only west of 110°W; a US-wide box must be collected first (AWC gives 30 days back).
+- **Region.** Score the contiguous US and the North Pacific corridor (US West coast, Alaska, Hawaii, Japan). Every other region measured is printed as "not scored: fewer than 2 reports a day mention turbulence"; regions never collected, such as Europe and the Atlantic, as "not scored: not measured yet". The store covers the US only west of 110°W; a US-wide box must be collected first (AWC gives 30 days back).
 - **Primary unit: one pilot report.** Every cruise-level report (FL290 to FL440) that states an intensity is one sample. Compare it with the forecast issued at fixed leads (24 h and 6 h) for the valid time nearest the report. This is how NOAA's own assessment scores, and it uses all 144 reports a day instead of the few near a panel route.
 - **Match window for a report.** Time: within 90 minutes of a forecast valid time (the memo above used ±1.5 h and ±3 h). Space: highest forecast value within 0.5 degree, about 30 nm (measured: this lifts AUC from 0.70 to 0.76, and NOAA notes "location errors in PIREPs"). Altitude: the forecast layer nearest the report, about ±2,000 ft.
 - **Scores to publish,** each with its sample count: hit rate on moderate-or-greater reports at the page's flag threshold; false-flag rate on smooth reports; AUC; all per region and per source (open index, GTG where it exists).
@@ -366,7 +366,7 @@ Research agent, from docs.github.com on 12 November 2026. I re-fetched the event
 
 ## Go / no-go
 
-**Go for approach B, in a changed form; approach C is not needed as a fallback.** The official WAFS turbulence grid cannot be had without an approval that a passenger page may not get, so B must not wait for it. But the gap it was feared to leave is filled: an index computed from open GFS data separates rough from smooth pilot reports with a measured AUC of 0.76 at 24 hours' lead, the public GTG grid adds a real turbulence forecast over the contiguous US within 18 hours, and a job on a free runner can fetch and decode both. The page therefore has content at the hour people look, provided it says "elevated wind shear" and never names a severity outside the US. The scorecard is stronger than planned: it needs no gated data, it can score two sources against each other, and it now has a measured method. What remains uncertain is not the data: demand is untested (the three-flight assignment still gates Phase 1), flights whose callsign cannot be mapped will be common in Europe, and outside the US and the North Pacific nothing can be verified.
+**Go for approach B, in a changed form; approach C is not needed as a fallback.** The official WAFS turbulence grid cannot be had without an approval that a passenger page may not get, so B must not wait for it. But the gap it was feared to leave is filled: an index computed from open GFS data separates rough from smooth pilot reports with a measured AUC of 0.76 at 24 hours' lead, the public GTG grid adds a real turbulence forecast over the contiguous US within 18 hours, and a job on a free runner can fetch and decode both. The page therefore has content at the hour people look, provided it says "elevated wind shear" and never names a severity outside the US. The scorecard is stronger than planned: it needs no gated data, it can score two sources against each other, and it now has a measured method. What remains uncertain is not the data: demand is untested (the three-flight assignment still gates Phase 1), flights whose callsign cannot be mapped will be common in Europe, and within the three boxes collected nothing can be verified outside the US and the North Pacific.
 
 ## What Anthony must do
 
@@ -392,6 +392,7 @@ Research agent, from docs.github.com on 12 November 2026. I re-fetched the event
 - Most schedule-source terms other than AeroDataBox's were read by the research agent only. FlightAware's licence text is shown only at purchase.
 - What counts as "repository activity" for GitHub's 60-day rule is undocumented.
 - DWD ICON and UK Met Office open data were not checked for a turbulence field.
+- Pilot-report density was measured only in the store's three boxes: West Pacific, East Pacific to 110°W, and Indian Ocean. Europe, the Atlantic and the US east of 110°W were never collected, so "only two regions can be scored" holds for those boxes only. (Corrected on 13 November 2026: the first version of this document stated it without that limit.)
 
 ## Follow-ups outside this recon (not done)
 
