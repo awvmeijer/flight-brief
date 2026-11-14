@@ -329,9 +329,9 @@ Still open:
 1. **Demand.** Untested. The Assignment gates Phase 1.
 2. **The flag threshold for the index.** 8 catches more rough air and flags a third of smooth reports; 12 flags fewer of both. The choice is printed on the page either way.
 3. **GTG wording.** Which eddy-dissipation values the page calls light, moderate or severe, and whether to name categories at all, since they depend on the aircraft.
-4. **How many of GTG's 24 daily runs to fetch.**
+4. ~~How many of GTG's 24 daily runs to fetch.~~ **Decided 2026-11-14 (Anthony): four, 00/06/12/18 UTC,** the same issue times as GFS, forecast hours 0 to 18. So for GTG the scorecard's "issued 6 h before" becomes "issued 6 to 12 h before".
 5. **ECMWF as a third source:** in Phase 2, or later.
-6. **Tile format and where tiles live.** Object storage is likelier than Turso for grids.
+6. **Tile format and where tiles live.** Object storage is likelier than Turso for grids. **Decided for GTG, 2026-11-14 (Anthony):** combined EDR at five cruise levels as the highest value per 12 km cell, 8-bit, one `.npz` per run (4.6 MB), stored as GitHub release assets for now. What that discards is listed in the README. Still open: the index tiles' format, and the long-term store once the page reads tiles.
 7. **Tomorrow.io:** the terms, and whether any headroom can be had. Needs Anthony (see below).
 8. **WIFS:** whether to apply at all, and whether derived categories could be shown publicly.
 9. **Departure-time pre-fill:** AeroDataBox's free tier, or typed times only.

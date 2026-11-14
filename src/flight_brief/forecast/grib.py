@@ -84,6 +84,29 @@ def grid_latlon(msg: Message) -> tuple[np.ndarray, np.ndarray]:
     return lat, (lon + 180.0) % 360.0 - 180.0
 
 
+def lambert_spec(msg: Message) -> dict:
+    """The numbers that define a Lambert conformal grid, enough to project without eccodes."""
+    if msg.grid_type != "lambert":
+        raise ValueError(f"not a Lambert grid: {msg.grid_type}")
+    gid = ec.codes_new_from_message(msg.handle_bytes)
+    try:
+        g = lambda key: ec.codes_get(gid, key)  # noqa: E731
+        if g("shapeOfTheEarth") != 6 or not g("jScansPositively") or g("iScansNegatively"):
+            raise ValueError("unexpected earth shape or scan order")
+        return {
+            "projection": "lambert_conformal",
+            "earth_radius_m": 6371229.0,  # GRIB2 shape of the earth 6
+            "lat_1": g("Latin1InDegrees"), "lat_2": g("Latin2InDegrees"),
+            "lat_d": g("LaDInDegrees"), "lon_v": g("LoVInDegrees"),
+            "lat_first": g("latitudeOfFirstGridPointInDegrees"),
+            "lon_first": g("longitudeOfFirstGridPointInDegrees"),
+            "dx_m": float(g("DxInMetres")), "dy_m": float(g("DyInMetres")),
+            "nx": msg.nx, "ny": msg.ny,
+        }
+    finally:
+        ec.codes_release(gid)
+
+
 def versions() -> str:
     return (f"eccodes lib {ec.codes_get_api_version()} | python binding "
             f"{getattr(ec, '__version__', '?')} | numpy {np.__version__}")
