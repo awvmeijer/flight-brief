@@ -205,3 +205,43 @@ def test_cli_takes_an_arrival_time(table: vrs.RouteTable, capsys: pytest.Capture
     assert "not both" in json.loads(capsys.readouterr().out)["message"]
     assert cli.main(run(table, *base, "--arr", "09:00", "--json")) == 2
     assert "arrival time" in json.loads(capsys.readouterr().out)["message"]
+
+
+@pytest.mark.parametrize(("pair", "block", "ok"), [
+    (("KSFO", "WSSS"), timedelta(hours=17, minutes=35), True),   # 7,340 nm as scheduled: 430 kt
+    (("KSFO", "WSSS"), timedelta(hours=23, minutes=20), False),  # a typo: 321 kt
+    (("KSFO", "WSSS"), timedelta(hours=21, minutes=30), True),   # slow, still a jet: 350 kt
+    (("KSFO", "WSSS"), timedelta(hours=10, minutes=20), False),  # too fast
+    (("KDFW", "KLAX"), timedelta(hours=3, minutes=55), True),    # 1,070 nm against the wind: 314 kt
+    (("KDFW", "KLAX"), timedelta(hours=4, minutes=20), False),   # 280 kt
+    (("KSFO", "KLAX"), timedelta(hours=1, minutes=55), True),    # 294 nm on a turboprop: 207 kt
+    (("KSFO", "KLAX"), timedelta(hours=2, minutes=10), False),   # 176 kt
+])
+def test_slowest_accepted_groundspeed_depends_on_distance(
+        table: vrs.RouteTable, pair: tuple[str, str], block: timedelta, ok: bool) -> None:
+    from brief_helpers import utc
+    from flight_brief.brief import make_flight
+    from flight_brief.resolve import typed_leg
+
+    leg = typed_leg(table, *pair)
+    assert not isinstance(leg, str)
+    departure = utc("2026-11-14T18:40")
+    if ok:
+        make_flight("XX1", leg, departure, arrival=departure + block)
+    else:
+        with pytest.raises(ValueError, match="arrival time does not fit a flight of"):
+            make_flight("XX1", leg, departure, arrival=departure + block)
+
+
+def test_refusal_says_whether_the_flight_is_too_long_or_too_short(table: vrs.RouteTable) -> None:
+    from brief_helpers import utc
+    from flight_brief.brief import make_flight
+    from flight_brief.resolve import typed_leg
+
+    leg = typed_leg(table, "KSFO", "WSSS")
+    assert not isinstance(leg, str)
+    departure = utc("2026-11-14T18:40")
+    with pytest.raises(ValueError, match="23 h 20 min gate to gate is too long"):
+        make_flight("UA29", leg, departure, arrival=utc("2026-11-15T18:00"))
+    with pytest.raises(ValueError, match="gate to gate is too short"):
+        make_flight("UA29", leg, departure, arrival=utc("2026-11-15T05:00"))

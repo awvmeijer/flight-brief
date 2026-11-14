@@ -56,7 +56,13 @@ REPORT_AGE_H = 3.0
 # the groundspeed is worked out, and the airborne part sits between the two.
 TAXI_OUT = timedelta(minutes=20)
 TAXI_IN = timedelta(minutes=10)
-SPEED_KT = (200.0, 700.0)  # a typed arrival time giving a groundspeed outside this is refused
+# A typed arrival time is refused when the groundspeed it gives is outside these limits. The
+# slowest accepted speed rises with distance: under 800 nm a turboprop on a short hop is real
+# (and the time on the ground dominates); beyond that only jets fly, and the limits sit under
+# the slowest scheduled westbound flights (about 360 kt over great-circle distance).
+FASTEST_KT = 700.0
+# (upper distance in nm, slowest groundspeed in kt)
+SLOWEST_KT = ((800, 200.0), (2500, 300.0), (math.inf, 340.0))
 
 # (upper distance in nm, cruise flight level, groundspeed in kt)
 BANDS = ((300, 240, 380), (800, 340, 430), (2500, 360, 460), (math.inf, 380, 480))
@@ -288,11 +294,14 @@ def make_flight(code: str, leg: Leg, departure: datetime, cruise_fl: int | None 
             raise ValueError("Give an arrival time or a groundspeed, not both")
         airborne = (arrival - departure - taxi) / timedelta(hours=1)
         groundspeed_kt = distance / airborne if airborne > 0 else 0.0
-        if not SPEED_KT[0] <= groundspeed_kt <= SPEED_KT[1]:
+        slowest = next(kt for limit, kt in SLOWEST_KT if distance < limit)
+        if not slowest <= groundspeed_kt <= FASTEST_KT:
+            h, m = divmod(int((arrival - departure) / timedelta(minutes=1)), 60)
             raise ValueError(
                 f"That arrival time does not fit a flight of {distance:,.0f} nm: "
-                f"{age(arrival - departure)} gate to gate. Check the arrival time, "
-                "which is local time at the destination")
+                f"{h} h {m:02d} min gate to gate is too "
+                f"{'short' if groundspeed_kt > FASTEST_KT or airborne <= 0 else 'long'}. "
+                "Check the arrival time, which is local time at the destination")
         speed = (f"Groundspeed {groundspeed_kt:.0f} kt for the whole flight, worked out from "
                  f"the departure and arrival times you entered less {taxi // timedelta(minutes=1)}"
                  " minutes on the ground")
