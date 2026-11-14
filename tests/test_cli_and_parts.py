@@ -212,8 +212,10 @@ def test_cli_takes_an_arrival_time(table: vrs.RouteTable, capsys: pytest.Capture
     (("KSFO", "WSSS"), timedelta(hours=23, minutes=20), False),  # a typo: 321 kt
     (("KSFO", "WSSS"), timedelta(hours=21, minutes=30), True),   # slow, still a jet: 350 kt
     (("KSFO", "WSSS"), timedelta(hours=10, minutes=20), False),  # too fast
-    (("KDFW", "KLAX"), timedelta(hours=3, minutes=55), True),    # 1,070 nm against the wind: 314 kt
-    (("KDFW", "KLAX"), timedelta(hours=4, minutes=20), False),   # 280 kt
+    (("KDFW", "KLAX"), timedelta(hours=4, minutes=20), True),    # 1,073 nm, turboprop range: 280 kt
+    (("KDFW", "KLAX"), timedelta(hours=5, minutes=20), False),   # 222 kt
+    (("KSFO", "PHNL"), timedelta(hours=7, minutes=20), True),    # 2,084 nm, jets only: 305 kt
+    (("KSFO", "PHNL"), timedelta(hours=7, minutes=40), False),   # 291 kt
     (("KSFO", "KLAX"), timedelta(hours=1, minutes=55), True),    # 294 nm on a turboprop: 207 kt
     (("KSFO", "KLAX"), timedelta(hours=2, minutes=10), False),   # 176 kt
 ])
@@ -245,3 +247,30 @@ def test_refusal_says_whether_the_flight_is_too_long_or_too_short(table: vrs.Rou
         make_flight("UA29", leg, departure, arrival=utc("2026-11-15T18:00"))
     with pytest.raises(ValueError, match="gate to gate is too short"):
         make_flight("UA29", leg, departure, arrival=utc("2026-11-15T05:00"))
+
+
+@pytest.mark.parametrize(("a", "b", "block", "ok"), [
+    # Air Tahiti VT956, Papeete to Gambier on an ATR 72: 893 nm in 3 h 45 min is 275 kt
+    ((-17.5537, -149.6073), (-23.0799, -134.8903), timedelta(hours=3, minutes=45), True),
+    ((-17.5537, -149.6073), (-23.0799, -134.8903), timedelta(hours=4, minutes=40), False),  # 214 kt
+    # Los Angeles to Seattle, 829 nm: 2 h 55 min as scheduled, 4 h 50 min is a typo (191 kt)
+    ((33.9425, -118.408), (47.449, -122.309), timedelta(hours=2, minutes=55), True),
+    ((33.9425, -118.408), (47.449, -122.309), timedelta(hours=4, minutes=50), False),
+])
+def test_a_long_turboprop_flight_is_accepted(a: tuple[float, float], b: tuple[float, float],
+                                             block: timedelta, ok: bool) -> None:
+    from brief_helpers import utc
+    from flight_brief.brief import make_flight
+    from flight_brief.resolve import Leg
+
+    def place(code: str, at: tuple[float, float]) -> vrs.Airport:
+        return vrs.Airport(code=code, name=code, icao=code, iata="", location=code, country="",
+                           lat=at[0], lon=at[1], tz=None)
+
+    leg = Leg(index=1, origin=place("AAAA", a), destination=place("BBBB", b))
+    departure = utc("2026-11-17T16:30")
+    if ok:
+        assert make_flight("VT956", leg, departure, arrival=departure + block).groundspeed_kt > 230
+    else:
+        with pytest.raises(ValueError, match="gate to gate is too long"):
+            make_flight("VT956", leg, departure, arrival=departure + block)

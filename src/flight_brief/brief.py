@@ -57,12 +57,14 @@ REPORT_AGE_H = 3.0
 TAXI_OUT = timedelta(minutes=20)
 TAXI_IN = timedelta(minutes=10)
 # A typed arrival time is refused when the groundspeed it gives is outside these limits. The
-# slowest accepted speed rises with distance: under 800 nm a turboprop on a short hop is real
-# (and the time on the ground dominates); beyond that only jets fly, and the limits sit under
-# the slowest scheduled westbound flights (about 360 kt over great-circle distance).
+# slowest accepted speed rises with distance. Under 800 nm a turboprop on a short hop is real
+# and the time on the ground dominates. From 800 to 1,200 nm turboprops still fly (an ATR 72
+# at about 275 kt, Papeete to Gambier, 893 nm), so the floor sits under that. Beyond 1,200 nm
+# only jets fly, and the limits sit under the slowest scheduled westbound flights (about
+# 360 kt over great-circle distance).
 FASTEST_KT = 700.0
 # (upper distance in nm, slowest groundspeed in kt)
-SLOWEST_KT = ((800, 200.0), (2500, 300.0), (math.inf, 340.0))
+SLOWEST_KT = ((800, 200.0), (1200, 230.0), (2500, 300.0), (math.inf, 340.0))
 
 # (upper distance in nm, cruise flight level, groundspeed in kt)
 BANDS = ((300, 240, 380), (800, 340, 430), (2500, 360, 460), (math.inf, 380, 480))
