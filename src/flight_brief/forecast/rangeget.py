@@ -8,6 +8,7 @@ Reading it first lets a job download a few messages instead of a 150 MB file.
 """
 from __future__ import annotations
 
+import http.client
 import time
 import urllib.error
 import urllib.request
@@ -80,7 +81,8 @@ def http_get(url: str, byte_range: tuple[int, int | None] | None = None, *,
             # A missing file will not appear by retrying; rate limits and server errors may clear.
             if e.code not in (429, 500, 502, 503, 504) or attempt == attempts - 1:
                 raise
-        except (urllib.error.URLError, TimeoutError, ConnectionError):
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException):
+            # HTTPException covers a garbled reply; NOMADS has answered "HTTP/1.1 0 Init".
             if attempt == attempts - 1:
                 raise
         time.sleep(5 + 10 * attempt)
