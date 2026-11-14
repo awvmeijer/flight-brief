@@ -49,3 +49,20 @@ def test_fetch_messages_requests_the_index_then_one_range_per_run_of_messages():
                             pause=0, get=fake_get)
     assert calls == [("http://x/f.grib2.idx", None), ("http://x/f.grib2", (100, 899))]
     assert got.data == body[100:900] and got.messages == 3 and got.requests == 2
+
+
+def test_http_get_retries_a_garbled_reply(monkeypatch):
+    import http.client
+    import io
+
+    replies = [http.client.BadStatusLine("HTTP/1.1   0 Init"), io.BytesIO(b"ok")]
+
+    def fake_urlopen(req, timeout):
+        r = replies.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    monkeypatch.setattr(rg.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(rg.time, "sleep", lambda s: None)
+    assert rg.http_get("http://x/f") == b"ok" and replies == []
