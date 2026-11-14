@@ -20,6 +20,7 @@ NOMADS keeps two days of GTG files, so the tiles are the only history of that fo
 - **What is not kept:** the 3 km detail, the other 46 levels, and the split into clear-air, mountain-wave and convective turbulence.
 - **Where:** assets of the release `gtg-tiles-YYYY-MM` in this repository, one file per run, about 4.6 MB each. Long-term storage is still open in the design.
 - **Format:** a numpy `.npz`, described in [`src/flight_brief/forecast/tiles.py`](src/flight_brief/forecast/tiles.py).
+- **Heartbeat:** after every start that ends well, the job overwrites `gtg-tiles.json` in the release `heartbeats` with when it finished and the newest run the store holds. The page's "source stale" state will read it; a job that keeps failing shows as an old heartbeat. See [`heartbeat.py`](src/flight_brief/forecast/heartbeat.py).
 
 Reading one:
 

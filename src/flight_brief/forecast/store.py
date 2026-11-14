@@ -3,7 +3,7 @@
 The design leaves the long-term home open (object storage is likely once the
 page reads tiles). Until then tiles are GitHub release assets: one release per
 month, one asset per run, written with the workflow's own token. Both stores
-have the same three methods, so moving is a copy.
+have the same three methods (a missing file raises FileNotFoundError), so moving is a copy.
 """
 from __future__ import annotations
 
@@ -21,9 +21,12 @@ class LocalStore:
         d = self.root / group
         return {p.name for p in d.iterdir()} if d.is_dir() else set()
 
-    def put(self, group: str, name: str, data: bytes) -> None:
-        (self.root / group).mkdir(parents=True, exist_ok=True)
-        (self.root / group / name).write_bytes(data)
+    def put(self, group: str, name: str, data: bytes, *, overwrite: bool = False) -> None:
+        path = self.root / group / name
+        if path.exists() and not overwrite:
+            raise FileExistsError(f"{group}/{name}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
 
     def get(self, group: str, name: str) -> bytes:
         return (self.root / group / name).read_bytes()
@@ -46,17 +49,17 @@ class ReleaseStore:
             raise RuntimeError(r.stderr.strip())
         return {a["name"] for a in json.loads(r.stdout)["assets"]}
 
-    def put(self, group: str, name: str, data: bytes) -> None:
+    def put(self, group: str, name: str, data: bytes, *, overwrite: bool = False) -> None:
         if self._gh("release", "view", group, "--json", "tagName").returncode != 0:
             r = self._gh("release", "create", group, "--title", group, "--latest=false", "--notes",
-                         "Saved NOAA GTG turbulence tiles, one file per run. "
-                         "Format: src/flight_brief/forecast/tiles.py.")
+                         "Written by the scheduled jobs of this repository. "
+                         "Formats: src/flight_brief/forecast/.")
             if r.returncode != 0:
                 raise RuntimeError(r.stderr.strip())
         with tempfile.TemporaryDirectory() as d:
             path = pathlib.Path(d) / name
             path.write_bytes(data)
-            r = self._gh("release", "upload", group, str(path))
+            r = self._gh("release", "upload", group, str(path), *(["--clobber"] if overwrite else []))
             if r.returncode != 0:
                 raise RuntimeError(r.stderr.strip())
 
@@ -64,6 +67,8 @@ class ReleaseStore:
         with tempfile.TemporaryDirectory() as d:
             r = self._gh("release", "download", group, "--pattern", name, "--dir", d)
             if r.returncode != 0:
+                if "release not found" in r.stderr or "no assets" in r.stderr:
+                    raise FileNotFoundError(f"{group}/{name}")
                 raise RuntimeError(r.stderr.strip())
             return (pathlib.Path(d) / name).read_bytes()
 
