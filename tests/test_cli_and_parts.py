@@ -140,3 +140,68 @@ def test_regions() -> None:
     assert not in_conus(51.47, -0.46) and not in_conus(21.32, -157.92) and not in_conus(19.4, -99.1)
     assert reports_cover(21.32, -157.92) and reports_cover(45.0, 170.0) and reports_cover(35.7, 140.4)
     assert not reports_cover(1.35, 103.99) and not reports_cover(51.47, -0.46)
+
+
+# --- check-again times and a typed arrival time ----------------------------------------------
+
+def test_too_early_hours_each_carry_their_own_check_time_and_a_group_shows_the_range(
+        table: vrs.RouteTable) -> None:
+    from brief_helpers import brief
+    from flight_brief.brief import REPORT_REACH_H, day_hhmm
+    from flight_brief.render import render
+
+    b = brief(table, "UA837", "2026-11-02", "18:00", "2026-11-02T22:00")
+    early = [h for h in b.hours if h.sources["reports"].state == "too_early"]
+    assert len(early) >= 2
+    for h in early:
+        assert h.sources["reports"].check_after == h.start - timedelta(hours=REPORT_REACH_H)
+    first, last = early[0], early[-1]
+    assert [h.index for h in early] == list(range(first.index, last.index + 1))
+    text = render(b)
+    assert (f"hours {first.index} to {last.index}: Too early to know. Check again from "
+            f"{day_hhmm(first.sources['reports'].check_after)} (hour {first.index}) to "
+            f"{day_hhmm(last.sources['reports'].check_after)} (hour {last.index})") in text
+    assert f"to {last.index}: Too early to know. Check again after" not in text
+
+
+def test_a_typed_arrival_time_sets_the_groundspeed_less_taxi(table: vrs.RouteTable) -> None:
+    from brief_helpers import brief, utc
+    from flight_brief.render import render
+
+    plain = brief(table, "UA837", "2026-11-02", "18:00", "2026-11-03T01:00")
+    arrival = plain.flight.departure_utc + timedelta(hours=11, minutes=30)
+    b = brief(table, "UA837", "2026-11-02", "18:00", "2026-11-03T01:00", arrival=arrival)
+    assert b.flight.arrival_utc == arrival and b.flight.arrival_source == "user input"
+    assert plain.flight.arrival_source == "estimate"
+    assert b.flight.groundspeed_kt == pytest.approx(b.flight.distance_nm / 11.0, rel=1e-3)
+    assert len(b.hours) == 12 and b.hours[-1].end == arrival
+    assert b.airports["destination"].at == arrival
+    assert any("30 minutes" in a and "arrival" in a for a in b.flight.assumptions)
+    assert "as you entered" in render(b).splitlines()[2]
+    assert "Arrives about" in render(plain) and "Arrives about" not in render(b)
+    with pytest.raises(ValueError, match="arrival time"):
+        brief(table, "UA837", "2026-11-02", "18:00", "2026-11-03T01:00",
+              arrival=utc("2026-11-03T04:00"))
+
+
+def test_arrival_clock_is_the_first_such_local_time_after_departure() -> None:
+    from brief_helpers import utc
+    from flight_brief.brief import arrival_utc
+
+    # San Francisco 10:40 on 14 Nov to Singapore 20:15 on 15 Nov, across the date line
+    assert arrival_utc(utc("2026-11-14T18:40"), "20:15", "Asia/Singapore") == utc("2026-11-15T12:15")
+    assert arrival_utc(utc("2026-11-14T18:40"), "20:15+08:00", None) == utc("2026-11-15T12:15")
+    # Honolulu: arrives on the same local date it left
+    assert arrival_utc(utc("2026-11-08T02:00"), "21:30", "Pacific/Honolulu") == utc("2026-11-08T07:30")
+
+
+def test_cli_takes_an_arrival_time(table: vrs.RouteTable, capsys: pytest.CaptureFixture[str]) -> None:
+    base = ["SQ231", "2026-11-04", "--dep", "08:00", "--as-of", "2026-11-03T23:00"]
+    assert cli.main(run(table, *base, "--arr", "19:10", "--json")) == 0
+    rec = json.loads(capsys.readouterr().out)
+    assert rec["flight"]["arrival_utc"] == "2026-11-04T08:10:00Z"
+    assert 400 < rec["flight"]["groundspeed_kt"] < 480
+    assert cli.main(run(table, *base, "--arr", "19:10", "--gs", "450", "--json")) == 2
+    assert "not both" in json.loads(capsys.readouterr().out)["message"]
+    assert cli.main(run(table, *base, "--arr", "09:00", "--json")) == 2
+    assert "arrival time" in json.loads(capsys.readouterr().out)["message"]

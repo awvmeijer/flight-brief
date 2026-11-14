@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
-from .brief import make_brief, to_utc
+from .brief import arrival_utc, make_brief, to_utc
 from .render import render
 from .resolve import Leg, resolve, typed_leg
 from .vrs import RouteTable
@@ -40,6 +40,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("date", help="local departure date at the origin, YYYY-MM-DD")
     parser.add_argument("--dep", required=True,
                         help="local departure time HH:MM (or HH:MM+08:00 with a UTC offset)")
+    parser.add_argument("--arr", help="local arrival time at the destination, HH:MM (or with a "
+                                      "UTC offset); sets the groundspeed. Without it the "
+                                      "arrival is an estimate")
     parser.add_argument("--snapshots", type=Path, required=True, help="snapshot store directory")
     parser.add_argument("--as-of", help="UTC time the brief is issued at; default now")
     parser.add_argument("--routes", type=Path,
@@ -91,11 +94,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         departure = to_utc(day, args.dep, leg.origin.tz)
+        arrival = arrival_utc(departure, args.arr, leg.destination.tz) if args.arr else None
+        assert found.code is not None
+        brief = make_brief(found.code, leg, day, departure, _as_of(args.as_of), args.snapshots,
+                           callsign=callsign, cruise_fl=args.fl, groundspeed_kt=args.gs,
+                           arrival=arrival)
     except ValueError as exc:
         return _fail(args, "invalid", str(exc))
-    assert found.code is not None
-    brief = make_brief(found.code, leg, day, departure, _as_of(args.as_of), args.snapshots,
-                       callsign=callsign, cruise_fl=args.fl, groundspeed_kt=args.gs)
     print(json.dumps(brief.record(), indent=2) if args.json else render(brief))
     return 0
 
