@@ -52,6 +52,11 @@ NEAR_NM = 150.0
 CORRIDOR_NM = 100.0
 CORRIDOR_FT = 4000
 REPORT_AGE_H = 3.0
+# A typed arrival time is gate to gate. The time on the ground at each end is taken off before
+# the groundspeed is worked out, and the airborne part sits between the two.
+TAXI_OUT = timedelta(minutes=20)
+TAXI_IN = timedelta(minutes=10)
+SPEED_KT = (200.0, 700.0)  # a typed arrival time giving a groundspeed outside this is refused
 
 # (upper distance in nm, cruise flight level, groundspeed in kt)
 BANDS = ((300, 240, 380), (800, 340, 430), (2500, 360, 460), (math.inf, 380, 480))
@@ -89,6 +94,7 @@ class Out(BaseModel):
 class SourceLine(Out):
     state: SourceState
     text: str
+    check_after: datetime | None = None  # for "too early": when this hour comes into reach
 
 
 class WarningHit(Out):
@@ -193,7 +199,8 @@ class FlightBlock(Out):
     departure_utc: datetime
     departure_local: str  # as the user entered it, with the origin's UTC offset
     departure_source: str = "user input"
-    arrival_utc: datetime  # estimate from distance and assumed groundspeed
+    arrival_utc: datetime  # as the user entered it, or from distance and assumed groundspeed
+    arrival_source: Literal["estimate", "user input"] = "estimate"
     distance_nm: float
     cruise_fl: int
     groundspeed_kt: float
@@ -248,6 +255,17 @@ def to_utc(day: date, clock: str, tz: str | None) -> datetime:
     return local.replace(tzinfo=ZoneInfo(tz)).astimezone(UTC)
 
 
+def arrival_utc(departure: datetime, clock: str, tz: str | None) -> datetime:
+    """A typed local arrival time as UTC: the first time that clock reads so at the destination
+    after departure. No flight is a day long, so the date never has to be typed."""
+    start = departure.astimezone(UTC).date() - timedelta(days=1)
+    try:
+        times = [to_utc(start + timedelta(days=n), clock, tz) for n in range(4)]
+    except ValueError as exc:
+        raise ValueError(str(exc).replace("departure airport", "arrival airport")) from exc
+    return min(t for t in times if t > departure)
+
+
 def defaults(distance: float) -> tuple[int, float]:
     """Cruise level and groundspeed for a distance band."""
     for limit, fl, kt in BANDS:
@@ -257,17 +275,39 @@ def defaults(distance: float) -> tuple[int, float]:
 
 
 def make_flight(code: str, leg: Leg, departure: datetime, cruise_fl: int | None = None,
-                groundspeed_kt: float | None = None) -> PassengerFlight:
+                groundspeed_kt: float | None = None,
+                arrival: datetime | None = None) -> PassengerFlight:
+    """`departure` and `arrival` are gate times. With an arrival time the flight is airborne
+    from `TAXI_OUT` after departure to `TAXI_IN` before arrival, at one groundspeed."""
     a, b = leg.origin, leg.destination
     distance = distance_nm(a.lat, a.lon, b.lat, b.lon)
     fl, kt = defaults(distance)
+    taxi = TAXI_OUT + TAXI_IN
+    if arrival is not None:
+        if groundspeed_kt:
+            raise ValueError("Give an arrival time or a groundspeed, not both")
+        airborne = (arrival - departure - taxi) / timedelta(hours=1)
+        groundspeed_kt = distance / airborne if airborne > 0 else 0.0
+        if not SPEED_KT[0] <= groundspeed_kt <= SPEED_KT[1]:
+            raise ValueError(
+                f"That arrival time does not fit a flight of {distance:,.0f} nm: "
+                f"{age(arrival - departure)} gate to gate. Check the arrival time, "
+                "which is local time at the destination")
+        speed = (f"Groundspeed {groundspeed_kt:.0f} kt for the whole flight, worked out from "
+                 f"the departure and arrival times you entered less {taxi // timedelta(minutes=1)}"
+                 " minutes on the ground")
+        times = "Departure and arrival times as you entered"
+        departure += TAXI_OUT
+    else:
+        speed = (f"Groundspeed {groundspeed_kt:.0f} kt as you entered" if groundspeed_kt
+                 else f"Groundspeed {kt:.0f} kt assumed for the whole flight; winds are not counted")
+        times = "Departure time as you entered; arrival is an estimate from distance and speed"
     notes = [
         (f"Cruise level FL{cruise_fl} as you entered" if cruise_fl
          else f"Cruise level FL{fl} assumed from the distance ({distance:,.0f} nm)"),
-        (f"Groundspeed {groundspeed_kt:.0f} kt as you entered" if groundspeed_kt
-         else f"Groundspeed {kt:.0f} kt assumed for the whole flight; winds are not counted"),
+        speed,
         "Route is a great-circle guess, not the filed route",
-        "Departure time as you entered; arrival is an estimate from distance and speed",
+        times,
     ]
     return PassengerFlight(
         flight_id=code, origin=a.code, destination=b.code, departure=departure,
@@ -306,8 +346,15 @@ def quote(text: str) -> str:
     return " ".join(text.split()).replace('"', "'")
 
 
+TOO_EARLY = "Too early to know. Check again"
+
+
 def too_early(after: datetime) -> str:
-    return f"Too early to know. Check again after {day_hhmm(after)}"
+    return f"{TOO_EARLY} after {day_hhmm(after)}"
+
+
+def _too_early(after: datetime) -> SourceLine:
+    return SourceLine(state="too_early", text=too_early(after), check_after=after)
 
 
 def in_conus(lat: float, lon: float) -> bool:
@@ -501,17 +548,20 @@ def _summary(hours: list[Hour]) -> str:
 
 def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datetime,
                root: Path, callsign: str | None = None, cruise_fl: int | None = None,
-               groundspeed_kt: float | None = None) -> Brief:
-    """The brief for one leg as known at `as_of`, read from the snapshot store at `root`."""
-    flight = make_flight(code, leg, departure, cruise_fl, groundspeed_kt)
+               groundspeed_kt: float | None = None, arrival: datetime | None = None) -> Brief:
+    """The brief for one leg as known at `as_of`, read from the snapshot store at `root`.
+    `departure` and the optional `arrival` are the gate times the user typed."""
+    flight = make_flight(code, leg, departure, cruise_fl, groundspeed_kt, arrival)
     points = timeline(flight)
-    arrival = points[-1].t
+    typed = arrival is not None
+    arrival = arrival or points[-1].t
     tz = leg.origin.tz
     local = departure.astimezone(ZoneInfo(tz)) if tz else departure
     block = FlightBlock(
         code=code, callsign=callsign, origin=_place(leg.origin),
         destination=_place(leg.destination), departure_utc=departure,
         departure_local=local.isoformat(timespec="minutes"), arrival_utc=arrival,
+        arrival_source="user input" if typed else "estimate",
         distance_nm=round(points[-1].nm, 0), cruise_fl=flight.cruise_fl,
         groundspeed_kt=flight.groundspeed_kt, assumptions=flight.assumptions)
     step = max(1, len(points) // 60)
@@ -600,8 +650,7 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
                     state="nothing_found",
                     text="Nothing found: no high-level turbulence area at cruise level here")
             else:
-                sources["gairmet"] = SourceLine(state="too_early", text=too_early(
-                    start - timedelta(hours=GAIRMET_REACH_H)))
+                sources["gairmet"] = _too_early(start - timedelta(hours=GAIRMET_REACH_H))
 
         mid = position_at(points, start + (end - start) / 2)
         near: list[ReportHit] = []
@@ -610,8 +659,7 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
                 state="not_covered",
                 text="Not covered here (too few pilot reports mention turbulence in this region)")
         elif lead > REPORT_REACH_H:
-            sources["reports"] = SourceLine(state="too_early", text=too_early(
-                start - timedelta(hours=REPORT_REACH_H)))
+            sources["reports"] = _too_early(start - timedelta(hours=REPORT_REACH_H))
         elif not rep_envs:
             sources["reports"] = SourceLine(state="stale",
                                             text=_last_update(root, "pirep", as_of))

@@ -7,7 +7,7 @@ nothing else is: the wording check relies on that to tell quoted text from this 
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from .brief import Brief, Hour, age, hhmm, levels
+from .brief import TOO_EARLY, Brief, Hour, SourceLine, age, day_hhmm, hhmm, levels
 
 SYMBOL = {"flagged": "#", "nothing_found": ".", "too_early": "?", "not_covered": "-",
           "stale": "!"}
@@ -21,20 +21,26 @@ def _span(a: int, b: int) -> str:
 
 
 def _grouped(hours: list[Hour], key: str) -> list[str]:
-    """One line per run of hours for which a source says the same thing."""
-    runs: list[tuple[int, int, str, str]] = []
+    """One line per run of hours for which a source says the same thing. "Too early" hours
+    differ only in when each comes into reach, so a run of them is one line giving the range."""
+    runs: list[tuple[int, int, SourceLine, SourceLine]] = []
     for h in hours:
         if key not in h.sources:
             continue
         line = h.sources[key]
-        # "Too early" lines differ only in their check-again time: keep the first, the earliest.
-        same = runs and runs[-1][1] == h.index - 1 and (
-            runs[-1][2] == line.text or runs[-1][3] == line.state == "too_early")
-        if same:
-            runs[-1] = (runs[-1][0], h.index, runs[-1][2], line.state)
+        if runs and runs[-1][1] == h.index - 1 and (
+                runs[-1][2].text == line.text or runs[-1][2].state == line.state == "too_early"):
+            runs[-1] = (runs[-1][0], h.index, runs[-1][2], line)
         else:
-            runs.append((h.index, h.index, line.text, line.state))
-    return [f"{_span(a, b)}: {text}" for a, b, text, _ in runs]
+            runs.append((h.index, h.index, line, line))
+    out = []
+    for a, b, first, last in runs:
+        text = first.text
+        if first.check_after and last.check_after and first.check_after != last.check_after:
+            text = (f"{TOO_EARLY} from {day_hhmm(first.check_after)} (hour {a}) to "
+                    f"{day_hhmm(last.check_after)} (hour {b})")
+        out.append(f"{_span(a, b)}: {text}")
+    return out
 
 
 def _local(t: datetime, tz: str | None) -> str:
@@ -55,13 +61,16 @@ def render(brief: Brief) -> str:
            f"leg {brief.identity.leg} . {f.origin.code} to {f.destination.code}"
            + (f" . callsign {f.callsign}" if f.callsign else "")]
     out.append(f"Departs {_local(f.departure_utc, f.origin.tz)} ({hhmm(f.departure_utc)}), "
-               f"as you entered . assumed FL{f.cruise_fl}, {f.groundspeed_kt:.0f} kt . "
+               f"as you entered . assumed FL{f.cruise_fl}, {f.groundspeed_kt:.0f} kt"
+               f"{' from your times' if f.arrival_source == 'user input' else ''} . "
                "route: great-circle guess")
     if brief.status != "ok":
         return "\n".join([*out, "", brief.message or "", "", *brief.notes])
     lead = f.departure_utc - brief.identity.issued_at
-    out.append(f"Arrives about {_local(f.arrival_utc, f.destination.tz)} "
-               f"({hhmm(f.arrival_utc)}) . {f.distance_nm:,.0f} nm . "
+    arrives = ("Arrives {} ({}), as you entered" if f.arrival_source == "user input"
+               else "Arrives about {} ({})")
+    out.append(arrives.format(_local(f.arrival_utc, f.destination.tz), hhmm(f.arrival_utc))
+               + f" . {f.distance_nm:,.0f} nm . "
                f"issued {age(lead)} before departure")
     out += ["", brief.summary, ""]
     out.append("hour  " + " ".join(f"{h.index:>2}" for h in brief.hours))
