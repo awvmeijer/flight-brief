@@ -1,0 +1,128 @@
+"""The brief as plain text, after the design's wireframe.
+
+Every piece of an official source's own text is printed inside double quotation marks, and
+nothing else is: the wording check relies on that to tell quoted text from this code's words.
+"""
+
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from .brief import Brief, Hour, age, hhmm, levels
+
+SYMBOL = {"flagged": "#", "nothing_found": ".", "too_early": "?", "not_covered": "-",
+          "stale": "!"}
+LEGEND = "# flagged  . nothing found  ? too early  - not covered  ! source stale"
+SOURCES = (("warnings", "Official warnings"), ("gairmet", "G-AIRMETs"),
+           ("reports", "Pilot reports"))
+
+
+def _span(a: int, b: int) -> str:
+    return f"hour {a}" if a == b else f"hours {a} to {b}"
+
+
+def _grouped(hours: list[Hour], key: str) -> list[str]:
+    """One line per run of hours for which a source says the same thing."""
+    runs: list[tuple[int, int, str, str]] = []
+    for h in hours:
+        if key not in h.sources:
+            continue
+        line = h.sources[key]
+        # "Too early" lines differ only in their check-again time: keep the first, the earliest.
+        same = runs and runs[-1][1] == h.index - 1 and (
+            runs[-1][2] == line.text or runs[-1][3] == line.state == "too_early")
+        if same:
+            runs[-1] = (runs[-1][0], h.index, runs[-1][2], line.state)
+        else:
+            runs.append((h.index, h.index, line.text, line.state))
+    return [f"{_span(a, b)}: {text}" for a, b, text, _ in runs]
+
+
+def _local(t: datetime, tz: str | None) -> str:
+    if tz is None:
+        return t.strftime("%a %d %b %H:%M UTC")
+    local = t.astimezone(ZoneInfo(tz))
+    offset = local.utcoffset()
+    assert offset is not None
+    minutes = int(offset.total_seconds() // 60)
+    sign = "+" if minutes >= 0 else "-"
+    hh, mm = divmod(abs(minutes), 60)
+    return local.strftime("%a %d %b %H:%M") + f" UTC{sign}{hh}" + (f":{mm:02d}" if mm else "")
+
+
+def render(brief: Brief) -> str:
+    f = brief.flight
+    out = [f"{f.code} . {f.origin.location} to {f.destination.location} . "
+           f"leg {brief.identity.leg} . {f.origin.code} to {f.destination.code}"
+           + (f" . callsign {f.callsign}" if f.callsign else "")]
+    out.append(f"Departs {_local(f.departure_utc, f.origin.tz)} ({hhmm(f.departure_utc)}), "
+               f"as you entered . assumed FL{f.cruise_fl}, {f.groundspeed_kt:.0f} kt . "
+               "route: great-circle guess")
+    if brief.status != "ok":
+        return "\n".join([*out, "", brief.message or "", "", *brief.notes])
+    lead = f.departure_utc - brief.identity.issued_at
+    out.append(f"Arrives about {_local(f.arrival_utc, f.destination.tz)} "
+               f"({hhmm(f.arrival_utc)}) . {f.distance_nm:,.0f} nm . "
+               f"issued {age(lead)} before departure")
+    out += ["", brief.summary, ""]
+    out.append("hour  " + " ".join(f"{h.index:>2}" for h in brief.hours))
+    out.append("      " + " ".join(f"{SYMBOL[h.state]:>2}" for h in brief.hours) + "     " + LEGEND)
+    out += ["", "What each source says"]
+    for key, name in SOURCES:
+        for i, line in enumerate(_grouped(brief.hours, key)):
+            out.append(f"  {name if i == 0 else '':<19}{line}")
+    agree = [f"{_span(h.index, h.index)}: "
+             + {"agree": "the sources that cover it agree", "disagree": "the sources disagree",
+                "single": "one source only"}[h.agreement]
+             for h in brief.hours if h.agreement and h.state == "flagged"]
+    if agree:
+        out.append(f"  {'Agreement':<19}" + " . ".join(agree))
+
+    quoted: list[str] = []
+    seen: set[str] = set()
+    for h in brief.hours:
+        for w in [*h.warnings, *h.gairmets]:
+            if w.hazard_id not in seen:
+                seen.add(w.hazard_id)
+                quoted.append(f"  hour {h.index}, {w.what}, {levels(w.base_ft, w.top_ft)}, "
+                              f'valid to {hhmm(w.valid_to)}: "{w.quoted}"')
+        for r in h.reports:
+            level = f"FL{r.flight_level:03d}" if r.flight_level is not None else "level not given"
+            quoted.append(f"  hour {h.index}, pilot report at {hhmm(r.observed_at)}, {level}, "
+                          f'{r.distance_nm:.0f} nm from the route: "{r.quoted}"')
+    if quoted:
+        out += ["", "The sources' own words", *quoted]
+
+    out += ["", "Near the airports"]
+    if not brief.near_airports:
+        warn = brief.hours[0].sources.get("warnings") if brief.hours else None
+        out.append("  " + ("Official warnings are stale, so this is not known"
+                           if warn and warn.state == "stale"
+                           else "No warning in force within 150 nm of either airport, "
+                                "surface to cruise level"))
+    for n in brief.near_airports:
+        where = "below cruise level" if n.below_cruise else "up to cruise level"
+        out.append(f"  {n.airport} {n.phase}: {n.what} {where}, {levels(n.base_ft, n.top_ft)}, "
+                   f'valid to {hhmm(n.valid_to)}: "{n.quoted}"')
+
+    out.append("")
+    for end, label in (("origin", "departure"), ("destination", "arrival")):
+        a = brief.airports[end]
+        place = f.origin if end == "origin" else f.destination
+        out.append(f"{place.location} ({a.code}), {label} {hhmm(a.at)}")
+        out.append(f"  TAF for then   {a.taf.text}")
+        if a.taf.quoted:
+            out.append(f'                 "{a.taf.quoted}"')
+        out.append(f"  METAR now      {a.metar.text}")
+        if a.metar.quoted:
+            out.append(f'                 "{a.metar.quoted}"')
+
+    if brief.warnings_without_area:
+        out += ["", f"{len(brief.warnings_without_area)} warning(s) worldwide came without an "
+                    "area and could not be placed on the route (listed in the record)"]
+    out += ["", "Assumptions", *[f"  {a}" for a in f.assumptions]]
+    out += ["", *brief.notes]
+    stale = [p.note for p in brief.provenance if p.stale and p.note]
+    out += stale
+    used = sorted({p.licence for p in brief.provenance})
+    out.append("Sources: " + " . ".join(used))
+    return "\n".join(out)

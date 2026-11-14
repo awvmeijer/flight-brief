@@ -5,3 +5,4 @@ __pycache__/
 *.grib2
 .env
 .env.*
+data/
