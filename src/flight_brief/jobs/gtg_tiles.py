@@ -14,6 +14,7 @@ import argparse
 import datetime as dt
 import sys
 import time
+import urllib.error
 
 import numpy as np
 
@@ -142,12 +143,24 @@ def main() -> None:
             todo.append(run)
         else:
             print(f"{run:%Y-%m-%d %HZ}: not on NOMADS (expired or not posted yet)")
-    print(f"{len(todo)} run(s) to save; taking at most {args.max_runs}")
+    print(f"{len(todo)} run(s) look available; saving at most {args.max_runs}")
 
     saved = []
-    for run in todo[:args.max_runs]:
+    for run in todo:
+        if len(saved) >= args.max_runs:
+            break
         t0 = time.monotonic()
-        tile, stats = build_tile(run)
+        try:
+            tile, stats = build_tile(run)
+        except urllib.error.HTTPError as e:
+            # NOMADS's servers disagree for a while about a day that is being
+            # removed: the index can answer while the file is gone. Skip the run;
+            # if it was only late, the next invocation picks it up.
+            if e.code != 404:
+                raise
+            print(f"{run:%Y-%m-%d %HZ}: skipped, a file is missing on NOMADS ({e.url})")
+            time.sleep(PAUSE_S)
+            continue
         data = tile.to_bytes()
         store.put(group_of(run), tiles.tile_name(run), data)
         saved.append(run)
