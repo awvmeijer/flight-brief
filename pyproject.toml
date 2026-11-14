@@ -12,6 +12,9 @@ dependencies = [
     "shapely>=2.0",
 ]
 
+[project.optional-dependencies]
+routes = ["timezonefinder>=6.5"]  # only to build the route table
+
 [project.scripts]
 brief = "flight_brief.cli:main"
 

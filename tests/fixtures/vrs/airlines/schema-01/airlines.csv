@@ -1,0 +1,9 @@
+﻿Code,Name,ICAO,IATA,PositioningFlightPattern,CharterFlightPattern
+BAW,British Airways,BAW,BA,9\d\d\d,^(45|85|86)\d\d$
+EZY,easyJet,EZY,U2,9\d\d\d,
+QFA,Qantas,QFA,QF,6\d\d\d,
+SHT,British Airways Shuttle,SHT,BA,,
+SIA,Singapore Airlines,SIA,SQ,,
+SQC,Singapore Airlines Cargo,SQC,SQ,,
+UAL,United Airlines,UAL,UA,,
+UFS,United Feeder Service,UFS,U2,,
