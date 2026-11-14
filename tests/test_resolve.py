@@ -92,3 +92,22 @@ def test_the_table_builds_from_the_repository_archive_without_unpacking(tmp_path
 def test_a_missing_table_says_how_to_build_one(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="flight_brief.vrs"):
         vrs.RouteTable(tmp_path / "none.sqlite")
+
+
+def test_an_airport_vrs_lacks_comes_from_the_supplement(table: vrs.RouteTable) -> None:
+    for code in ("GMR", "NTGJ"):
+        gambier = table.airport(code)
+        assert gambier is not None and gambier.code == "NTGJ" and gambier.iata == "GMR"
+        assert (gambier.lat, gambier.lon) == pytest.approx((-23.08, -134.89), abs=0.01)
+        assert gambier.tz == "Pacific/Gambier" and gambier.country == "PF"
+    assert "OurAirports" in (table.meta("supplement") or "")
+    leg = typed_leg(table, "PPT", "GMR")
+    assert not isinstance(leg, str) and (leg.origin.code, leg.destination.code) == ("NTAA", "NTGJ")
+
+
+def test_vrs_wins_over_the_supplement_when_it_has_the_airport(tmp_path: Path) -> None:
+    header = "Code,Name,ICAO,IATA,Location,CountryISO2,Latitude,Longitude,AltitudeFeet\n"
+    files = [("airports", header + "NTGJ,Named by VRS,NTGJ,GMR,Rikitea,PF,-23.1,-134.9,7\n")]
+    counts = vrs.build(files, tmp_path / "t.sqlite", lambda lat, lon: None)
+    built = vrs.RouteTable(tmp_path / "t.sqlite").airport("GMR")
+    assert counts["airports"] == 1 and built is not None and built.name == "Named by VRS"

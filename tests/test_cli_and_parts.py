@@ -274,3 +274,14 @@ def test_a_long_turboprop_flight_is_accepted(a: tuple[float, float], b: tuple[fl
     else:
         with pytest.raises(ValueError, match="gate to gate is too long"):
             make_flight("VT956", leg, departure, arrival=departure + block)
+
+
+def test_cli_briefs_a_turboprop_flight_to_an_airport_from_the_supplement(
+        table: vrs.RouteTable, capsys: pytest.CaptureFixture[str]) -> None:
+    # Air Tahiti VT956, Papeete to Gambier: 06:30 UTC-10 to 11:15 UTC-9 is 3 h 45 min
+    assert cli.main(run(table, "VT956", "2026-11-17", "--dep", "06:30", "--arr", "11:15",
+                        "--from", "PPT", "--to", "GMR", "--as-of", "2026-11-17T10:00")) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("VT956 . Papeete to Gambier Islands . leg 1 . NTAA to NTGJ")
+    assert "275 kt from your times" in out[1]
+    assert out[2].startswith("Arrives Tue 17 Nov 11:15 UTC-9 (20:15 UTC), as you entered . 893 nm")

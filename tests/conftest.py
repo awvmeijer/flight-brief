@@ -11,7 +11,7 @@ ZONES = {"WS": "Asia/Singapore", "EG": "Europe/London", "YS": "Australia/Sydney"
          "KD": "America/Denver", "KO": "America/Chicago", "RJ": "Asia/Tokyo",
          "PH": "Pacific/Honolulu", "NZ": "Pacific/Auckland", "VH": "Asia/Hong_Kong",
          "FA": "Africa/Johannesburg", "KM": "America/New_York", "KA": "America/New_York",
-         "KDFW": "America/Chicago"}
+         "KDFW": "America/Chicago", "NTAA": "Pacific/Tahiti", "NTGJ": "Pacific/Gambier"}
 
 
 @pytest.fixture(scope="session")
@@ -20,7 +20,7 @@ def table(tmp_path_factory: pytest.TempPathFactory) -> vrs.RouteTable:
     out = tmp_path_factory.mktemp("vrs") / "vrs.sqlite"
     files = list(vrs.from_folder(FIXTURES / "vrs"))
     codes = {}
-    for kind, text in files:
+    for kind, text in [*files, ("airports", vrs.EXTRA_AIRPORTS.read_text(encoding="utf-8"))]:
         if kind == "airports":
             for row in vrs._rows(text):
                 codes[(float(row["Latitude"]), float(row["Longitude"]))] = row["Code"]
