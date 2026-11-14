@@ -2,7 +2,24 @@
 
 A planned page where a passenger types a flight code and date and gets a weather and turbulence brief, with a public record of how the forecasts did. The design is [`docs/DESIGN.md`](docs/DESIGN.md); the data-source recon is [`docs/RECON.md`](docs/RECON.md).
 
-So far the repo holds the docs and the two early pieces of the forecast layer (Phase 2). The resolver, brief engine and page are not started.
+So far the repo holds the docs, the core package and brief engine with a command-line brief (Phase 1), and the two early pieces of the forecast layer (Phase 2). The forecast layer is not yet read by the brief, and the page is not started.
+
+## The brief (Phase 1)
+
+`brief` resolves a flight code to its airports, takes the departure time as typed, and prints what each source knows for each hour of the flight, read offline from a snapshot directory.
+
+```bash
+uv run --extra routes python -m flight_brief.vrs --out data/vrs.sqlite   # once: build the route table
+uv run brief SQ231 2026-11-04 --dep 08:00 --as-of 2026-11-03T23:00 --snapshots tests/fixtures/snapshots
+```
+
+- **Arguments:** the date and `--dep` are local at the origin. `--as-of` is the UTC time the brief is issued at. `--json` prints the brief record of `docs/DESIGN.md` instead of text. `--leg` picks a leg of a multi-leg number, `--airline` picks one when a code is shared, and `--from` with `--to` give the airports when a number does not map. `--fl` and `--gs` replace the assumed cruise level and groundspeed.
+- **Sources read:** SIGMETs from the `sigmet` feed, G-AIRMET high-level turbulence areas over the contiguous US, pilot reports within 100 nm and 4,000 ft of the route, and TAF and METAR for the two airports. The wind-shear index and GTG arrive with Phase 2, so `shear` and `gtg` are null in every record.
+- **Snapshots:** the layout of `oceanic-flight-watch`'s store, `<source>/<YYYY-MM-DD>/<HHMM>Z[_<tag>].json.gz`. That store has no G-AIRMETs; `python -m flight_brief.awc gairmet --at <time> --out <dir>` saves them in the same layout.
+- **Route table:** built from [VRS standing-data](https://github.com/vradarserver/standing-data) (CC0), with each airport's time zone added by timezonefinder (boundary data from timezone-boundary-builder, ODbL). It is about 37 MB and is not committed.
+- **Wording:** the code never writes a severity word. An official source's own text is carried in `quoted` fields and printed inside quotation marks.
+
+The modules under `src/flight_brief/core/` are copied from `oceanic-flight-watch` (MIT, same author); each file says what changed.
 
 ## What runs
 
@@ -35,6 +52,7 @@ tile.sample(39.86, -104.67, flight_level=360, forecast_hour=6)   # EDR near Denv
 ```bash
 uv sync
 uv run pytest
+uv run brief SQ231 2026-11-04 --dep 08:00 --as-of 2026-11-03T23:00 --snapshots tests/fixtures/snapshots
 uv run python -m flight_brief.jobs.decode_check
 uv run python -m flight_brief.jobs.gtg_tiles --store dir:/tmp/tiles --max-runs 1 --verify
 ```

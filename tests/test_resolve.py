@@ -84,7 +84,7 @@ def test_the_table_builds_from_the_repository_archive_without_unpacking(tmp_path
         tar.add(FIXTURES / "vrs", arcname="standing-data-main")
     buf.seek(0)
     counts = vrs.build(vrs.from_archive(buf), tmp_path / "t.sqlite", lambda lat, lon: None)
-    assert counts["airlines"] == 8 and counts["routes"] >= 20 and counts["airports"] >= 20
+    assert counts["airlines"] == 9 and counts["routes"] >= 20 and counts["airports"] >= 20
     built = vrs.RouteTable(tmp_path / "t.sqlite")
     assert built.route("SIA322") == ["WSSS", "EGLL"] and built.meta("licence") == vrs.LICENCE
 

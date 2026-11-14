@@ -6,7 +6,7 @@ reads one store. A file that exists is never rewritten, which makes every run re
 
 Copied from oceanic-flight-watch (`src/oceanic_watch/snapshots.py` at commit 962e41a, MIT,
 Copyright (c) 2026 Anthony Meijer). Changed: `strip_secrets` uses the standard library
-instead of httpx.
+instead of httpx, and `latest` can accept an empty reply (for feeds where empty is an answer).
 """
 
 import gzip
@@ -79,7 +79,7 @@ def envelopes(root: Path, source: str) -> Iterator[Envelope]:
 
 def latest(
     root: Path, source: str, at: datetime, tag: str | None = None,
-    max_age: timedelta = timedelta(hours=3),
+    max_age: timedelta = timedelta(hours=3), statuses: tuple[str, ...] = ("ok",),
 ) -> Envelope | None:
     """The newest successful envelope at or before `at`, no older than `max_age`: replay's
     "as known at T". None means the feed was silent, which callers must report, not hide."""
@@ -87,7 +87,7 @@ def latest(
     paths = sorted(p for d in days for p in (root / source / d).glob("*.json.gz"))
     for path in reversed(paths):
         env = read(path)
-        if (tag is None or env.tag == tag) and env.as_of <= at and env.status == "ok":
+        if (tag is None or env.tag == tag) and env.as_of <= at and env.status in statuses:
             return env if at - env.as_of <= max_age else None
     return None
 
