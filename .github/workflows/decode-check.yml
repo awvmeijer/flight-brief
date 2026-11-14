@@ -1,0 +1,37 @@
+# Phase 2, first step (docs/DESIGN.md): prove on a Linux runner that the GRIB2
+# fetch and decode the forecast jobs depend on work there. The recon measured
+# them on macOS only.
+name: decode-check
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/decode-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: decode-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  decode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Unit tests (no network)
+        run: uv run pytest -q
+      - name: Fetch, decode, index, timing and memory
+        run: uv run python -m flight_brief.jobs.decode_check
