@@ -4,6 +4,8 @@ Source: https://github.com/vradarserver/standing-data (CC0 1.0), schema-01: `air
 route files per airline (callsign to airports, no times) and airport files. The table adds
 one column the source does not have, each airport's time zone, worked out once at build time
 so that a brief needs only the standard library to turn a local departure time into UTC.
+Airports VRS lacks come from a small supplement file, `data/airports_extra.csv` (OurAirports,
+public domain), added one at a time when a real lookup fails.
 
 Build it with `python -m flight_brief.vrs --out data/vrs.sqlite` (needs the `routes` extra
 for timezonefinder, whose boundary data is from timezone-boundary-builder, ODbL).
@@ -25,6 +27,9 @@ from pydantic import BaseModel
 ARCHIVE = "https://github.com/vradarserver/standing-data/archive/refs/heads/main.tar.gz"
 USER_AGENT = "flight-brief/0.1 (route table build)"
 LICENCE = "VRS standing-data, CC0 1.0"
+# Airports VRS does not have, in VRS's airport columns. See `data/README.md` for the source.
+EXTRA_AIRPORTS = Path(__file__).parent / "data" / "airports_extra.csv"
+SUPPLEMENT = "OurAirports, public domain (The Unlicense)"
 MEMBER = re.compile(r"(?:^|/)(airlines|routes|airports)/schema-01/(?:.*/)?[^/]+\.csv$")
 TzOf = Callable[[float, float], str | None]
 
@@ -99,19 +104,36 @@ def build(files: Iterable[tuple[str, str]], out: Path, tz_of: TzOf,
                 db.execute("INSERT OR REPLACE INTO routes VALUES (?,?,?,?)",
                            (r["Callsign"], r["AirlineCode"], r["Number"], r["AirportCodes"]))
             else:
-                lat, lon = float(r["Latitude"]), float(r["Longitude"])
-                db.execute("INSERT OR REPLACE INTO airports VALUES (?,?,?,?,?,?,?,?,?)",
-                           (r["Code"], r["Name"], r["ICAO"], r["IATA"], r["Location"],
-                            r["CountryISO2"], lat, lon, tz_of(lat, lon)))
+                _add_airport(db, r, tz_of, "REPLACE")
+    # The supplement goes in last and never replaces a row: VRS wins when it has the airport.
+    before = db.total_changes
+    for r in _rows(EXTRA_AIRPORTS.read_text(encoding="utf-8")):
+        _add_airport(db, r, tz_of, "IGNORE")
+    added = db.total_changes - before
     built = (now or datetime.now(UTC)).isoformat(timespec="seconds")
     db.executemany("INSERT INTO meta VALUES (?,?)",
-                   [("built_at", built), ("source", ARCHIVE), ("licence", LICENCE)])
+                   [("built_at", built), ("source", ARCHIVE), ("licence", LICENCE),
+                    ("supplement", f"{SUPPLEMENT}: {added} airport{'s' if added != 1 else ''} "
+                                   "that VRS does not have")])
     counts = {t: db.execute(f"SELECT count(*) FROM {t}").fetchone()[0]  # noqa: S608
               for t in ("airlines", "routes", "airports")}
     db.commit()
     db.close()
     tmp.replace(out)
     return counts
+
+
+def _add_airport(db: sqlite3.Connection, r: dict[str, str], tz_of: TzOf, clash: str) -> None:
+    """Insert one airport row unless VRS lists it under another key: the supplement must not
+    shadow a VRS airport that has the same ICAO or IATA code."""
+    if clash == "IGNORE" and db.execute(
+            "SELECT 1 FROM airports WHERE code = ? OR icao = ? OR (iata = ? AND iata <> '')",
+            (r["Code"], r["ICAO"], r["IATA"])).fetchone():
+        return
+    lat, lon = float(r["Latitude"]), float(r["Longitude"])
+    db.execute(f"INSERT OR {clash} INTO airports VALUES (?,?,?,?,?,?,?,?,?)",  # noqa: S608
+               (r["Code"], r["Name"], r["ICAO"], r["IATA"], r["Location"],
+                r["CountryISO2"], lat, lon, tz_of(lat, lon)))
 
 
 class RouteTable:
