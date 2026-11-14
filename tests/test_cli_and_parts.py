@@ -285,3 +285,13 @@ def test_cli_briefs_a_turboprop_flight_to_an_airport_from_the_supplement(
     assert out[0].startswith("VT956 . Papeete to Gambier Islands . leg 1 . NTAA to NTGJ")
     assert "275 kt from your times" in out[1]
     assert out[2].startswith("Arrives Tue 17 Nov 11:15 UTC-9 (20:15 UTC), as you entered . 893 nm")
+
+
+def test_cli_resolves_a_flight_number_from_the_route_supplement(
+        table: vrs.RouteTable, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(run(table, "VT956", "2026-11-17", "--dep", "06:30", "--arr", "11:15",
+                        "--as-of", "2026-11-17T10:00")) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == ("VT956 . Papeete to Gambier Islands . leg 1 . NTAA to NTGJ . "
+                      "callsign VTA956")
+    assert out[2].startswith("Arrives Tue 17 Nov 11:15 UTC-9 (20:15 UTC), as you entered")

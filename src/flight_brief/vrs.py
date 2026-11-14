@@ -5,7 +5,8 @@ route files per airline (callsign to airports, no times) and airport files. The 
 one column the source does not have, each airport's time zone, worked out once at build time
 so that a brief needs only the standard library to turn a local departure time into UTC.
 Airports VRS lacks come from a small supplement file, `data/airports_extra.csv` (OurAirports,
-public domain), added one at a time when a real lookup fails.
+public domain), and routes it lacks from `data/routes_extra.csv` (single facts typed by hand).
+Both grow one row at a time, when a real lookup fails.
 
 Build it with `python -m flight_brief.vrs --out data/vrs.sqlite` (needs the `routes` extra
 for timezonefinder, whose boundary data is from timezone-boundary-builder, ODbL).
@@ -30,6 +31,8 @@ LICENCE = "VRS standing-data, CC0 1.0"
 # Airports VRS does not have, in VRS's airport columns. See `data/README.md` for the source.
 EXTRA_AIRPORTS = Path(__file__).parent / "data" / "airports_extra.csv"
 SUPPLEMENT = "OurAirports, public domain (The Unlicense)"
+# Routes VRS does not have, in VRS's route columns: single facts typed by hand.
+EXTRA_ROUTES = Path(__file__).parent / "data" / "routes_extra.csv"
 MEMBER = re.compile(r"(?:^|/)(airlines|routes|airports)/schema-01/(?:.*/)?[^/]+\.csv$")
 TzOf = Callable[[float, float], str | None]
 
@@ -110,11 +113,19 @@ def build(files: Iterable[tuple[str, str]], out: Path, tz_of: TzOf,
     for r in _rows(EXTRA_AIRPORTS.read_text(encoding="utf-8")):
         _add_airport(db, r, tz_of, "IGNORE")
     added = db.total_changes - before
+    before = db.total_changes
+    for r in _rows(EXTRA_ROUTES.read_text(encoding="utf-8")):
+        db.execute("INSERT OR IGNORE INTO routes VALUES (?,?,?,?)",
+                   (r["Callsign"], r["AirlineCode"], r["Number"], r["AirportCodes"]))
+    routes = db.total_changes - before
     built = (now or datetime.now(UTC)).isoformat(timespec="seconds")
     db.executemany("INSERT INTO meta VALUES (?,?)",
                    [("built_at", built), ("source", ARCHIVE), ("licence", LICENCE),
                     ("supplement", f"{SUPPLEMENT}: {added} airport{'s' if added != 1 else ''} "
-                                   "that VRS does not have")])
+                                   "that VRS does not have"),
+                    ("supplement_routes", f"typed by hand from airline schedules: {routes} "
+                                          f"route{'s' if routes != 1 else ''} that VRS does "
+                                          "not have")])
     counts = {t: db.execute(f"SELECT count(*) FROM {t}").fetchone()[0]  # noqa: S608
               for t in ("airlines", "routes", "airports")}
     db.commit()

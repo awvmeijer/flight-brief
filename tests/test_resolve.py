@@ -84,7 +84,7 @@ def test_the_table_builds_from_the_repository_archive_without_unpacking(tmp_path
         tar.add(FIXTURES / "vrs", arcname="standing-data-main")
     buf.seek(0)
     counts = vrs.build(vrs.from_archive(buf), tmp_path / "t.sqlite", lambda lat, lon: None)
-    assert counts["airlines"] == 9 and counts["routes"] >= 20 and counts["airports"] >= 20
+    assert counts["airlines"] == 10 and counts["routes"] >= 20 and counts["airports"] >= 20
     built = vrs.RouteTable(tmp_path / "t.sqlite")
     assert built.route("SIA322") == ["WSSS", "EGLL"] and built.meta("licence") == vrs.LICENCE
 
@@ -111,3 +111,19 @@ def test_vrs_wins_over_the_supplement_when_it_has_the_airport(tmp_path: Path) ->
     counts = vrs.build(files, tmp_path / "t.sqlite", lambda lat, lon: None)
     built = vrs.RouteTable(tmp_path / "t.sqlite").airport("GMR")
     assert counts["airports"] == 1 and built is not None and built.name == "Named by VRS"
+
+
+def test_a_route_vrs_lacks_comes_from_the_supplement(table: vrs.RouteTable) -> None:
+    found = resolve("VT956", table)
+    assert found.status == "mapped" and found.callsign == "VTA956" and found.airline == "Air Tahiti"
+    assert [(x.origin.code, x.destination.code) for x in found.legs] == [("NTAA", "NTGJ")]
+    assert "1 route" in (table.meta("supplement_routes") or "")
+
+
+def test_vrs_wins_over_the_supplement_when_it_has_the_callsign(tmp_path: Path) -> None:
+    files = [("routes", "Callsign,Code,Number,AirlineCode,AirportCodes\n"
+                        "VTA956,VTA,956,VTA,NTGJ-NTAA\n")]
+    counts = vrs.build(files, tmp_path / "t.sqlite", lambda lat, lon: None)
+    built = vrs.RouteTable(tmp_path / "t.sqlite")
+    assert counts["routes"] == 1 and built.route("VTA956") == ["NTGJ", "NTAA"]
+    assert "0 routes" in (built.meta("supplement_routes") or "")
