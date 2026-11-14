@@ -18,10 +18,11 @@ import urllib.error
 
 import numpy as np
 
-from ..forecast import grib, sources, tiles
+from ..forecast import grib, heartbeat, sources, tiles
 from ..forecast.rangeget import fetch_messages
 from ..forecast.store import open_store
 
+JOB = "gtg-tiles"
 FLIGHT_LEVELS = (300, 330, 360, 390, 420)
 RUN_HOURS = (0, 6, 12, 18)
 LOOK_BACK_HOURS = 48
@@ -131,12 +132,13 @@ def main() -> None:
     now = dt.datetime.now(dt.timezone.utc)
     print(grib.versions())
 
-    todo, have = [], {}
+    todo, have, stored = [], {}, []
     for run in candidate_runs(now):
         group = group_of(run)
         if group not in have:
             have[group] = store.names(group)
         if tiles.tile_name(run) in have[group]:
+            stored.append(run)
             continue
         time.sleep(PAUSE_S)
         if sources.exists(sources.gtg_url(run, sources.GTG_FORECAST_HOURS[-1]) + ".idx"):
@@ -145,7 +147,7 @@ def main() -> None:
             print(f"{run:%Y-%m-%d %HZ}: not on NOMADS (expired or not posted yet)")
     print(f"{len(todo)} run(s) look available; saving at most {args.max_runs}")
 
-    saved = []
+    saved, skipped = [], []
     for run in todo:
         if len(saved) >= args.max_runs:
             break
@@ -159,6 +161,7 @@ def main() -> None:
             if e.code != 404:
                 raise
             print(f"{run:%Y-%m-%d %HZ}: skipped, a file is missing on NOMADS ({e.url})")
+            skipped.append(run)
             time.sleep(PAUSE_S)
             continue
         data = tile.to_bytes()
@@ -173,6 +176,10 @@ def main() -> None:
     if args.verify and saved:
         if not verify(store, saved[-1]):
             sys.exit("read-back does not match a direct decode")
+    # Written last, so a start that failed anywhere above leaves the old heartbeat in place.
+    record = heartbeat.write(store, JOB, started=now, finished=dt.datetime.now(dt.timezone.utc),
+                             newest_run=max(stored + saved, default=None), saved=saved, skipped=skipped)
+    print(f"heartbeat: finished {record['finished_at']}, newest run in the store {record['newest_run']}")
     print(f"peak memory {grib.peak_rss_mb():.0f} MB")
 
 
