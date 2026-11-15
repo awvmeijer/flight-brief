@@ -61,8 +61,8 @@ def test_replay_sq231_crosses_a_thunderstorm_warning_at_the_times_the_core_gives
 
     assert inside(hit.entry + timedelta(minutes=2)) and inside(hit.exit - timedelta(minutes=2))
     assert not inside(hit.entry - timedelta(minutes=5))
-    assert hit.entry >= b.flight.departure_utc and hit.exit <= hit.valid_to
-    assert timedelta(minutes=15) < hit.entry - b.flight.departure_utc < timedelta(minutes=30)
+    assert hit.entry >= b.flight.takeoff_utc and hit.exit <= hit.valid_to
+    assert timedelta(minutes=15) < hit.entry - b.flight.takeoff_utc < timedelta(minutes=30)
 
 
 def test_replay_ua837_crosses_two_turbulence_warnings_and_the_antimeridian(
@@ -209,7 +209,9 @@ def test_a_red_eye_keeps_the_typed_local_date_and_runs_past_midnight(table: vrs.
     assert b.flight.arrival_utc.date().isoformat() == "2026-11-04"
     assert (b.flight.cruise_fl, b.flight.groundspeed_kt) == (380, 480)
     assert all(a.end == c.start for a, c in zip(b.hours, b.hours[1:], strict=False))
-    assert b.hours[-1].end == b.flight.arrival_utc and len(b.hours) == 13
+    assert b.hours[0].start == b.flight.takeoff_utc == utc("2026-11-03T16:15")
+    assert b.hours[-1].end == b.flight.landing_utc and len(b.hours) == 13
+    assert b.flight.arrival_utc - b.flight.landing_utc == timedelta(minutes=10)
     assert "Fri" not in render(b) and "Tue 03 Nov 23:55 UTC+8" in render(b)
 
 
