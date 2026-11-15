@@ -1,7 +1,8 @@
 """The route table: VRS standing-data compiled into one small SQLite file.
 
 Source: https://github.com/vradarserver/standing-data (CC0 1.0), schema-01: `airlines.csv`,
-route files per airline (callsign to airports, no times) and airport files. The table adds
+route files per airline (callsign to airports, no times), airport files and the `model-type`
+files (ICAO aircraft type codes with their engine kind). The table adds
 one column the source does not have, each airport's time zone, worked out once at build time
 so that a brief needs only the standard library to turn a local departure time into UTC.
 Airports VRS lacks come from a small supplement file, `data/airports_extra.csv` (OurAirports,
@@ -30,7 +31,7 @@ LICENCE = "VRS standing-data, CC0 1.0"
 # Airports VRS does not have, in VRS's airport columns. See `data/README.md` for the source.
 EXTRA_AIRPORTS = Path(__file__).parent / "data" / "airports_extra.csv"
 SUPPLEMENT = "OurAirports, public domain (The Unlicense)"
-MEMBER = re.compile(r"(?:^|/)(airlines|routes|airports)/schema-01/(?:.*/)?[^/]+\.csv$")
+MEMBER = re.compile(r"(?:^|/)(airlines|routes|airports|model-type)/schema-01/(?:.*/)?[^/]+\.csv$")
 TzOf = Callable[[float, float], str | None]
 
 SCHEMA = """
@@ -38,6 +39,7 @@ CREATE TABLE airlines (code TEXT, name TEXT, icao TEXT, iata TEXT);
 CREATE TABLE routes (callsign TEXT PRIMARY KEY, airline TEXT, number TEXT, airports TEXT);
 CREATE TABLE airports (code TEXT PRIMARY KEY, name TEXT, icao TEXT, iata TEXT, location TEXT,
                        country TEXT, lat REAL, lon REAL, tz TEXT);
+CREATE TABLE model_types (icao TEXT PRIMARY KEY, engine TEXT, species TEXT);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE INDEX airlines_iata ON airlines (iata);
 CREATE INDEX airlines_icao ON airlines (icao);
@@ -103,6 +105,11 @@ def build(files: Iterable[tuple[str, str]], out: Path, tz_of: TzOf,
             elif kind == "routes":
                 db.execute("INSERT OR REPLACE INTO routes VALUES (?,?,?,?)",
                            (r["Callsign"], r["AirlineCode"], r["Number"], r["AirportCodes"]))
+            elif kind == "model-type":
+                # Several rows share one type code (one per manufacturer and model name) and
+                # agree on engine kind and species, so the first is kept.
+                db.execute("INSERT OR IGNORE INTO model_types VALUES (?,?,?)",
+                           (r["ICAO"], r["EngineTypeCode"], r["SpeciesCode"]))
             else:
                 _add_airport(db, r, tz_of, "REPLACE")
     # The supplement goes in last and never replaces a row: VRS wins when it has the airport.
@@ -164,6 +171,17 @@ class RouteTable:
         row = self.db.execute("SELECT airports FROM routes WHERE callsign = ?",
                               (callsign,)).fetchone()
         return row[0].split("-") if row else None
+
+    def model_type(self, icao: str) -> tuple[str, str] | None:
+        """(engine code, species code) of an ICAO aircraft type designator, from VRS
+        `model-type`: engine J jet, T turboprop, P piston; species L is a landplane."""
+        try:
+            row = self.db.execute("SELECT engine, species FROM model_types WHERE icao = ?",
+                                  (icao,)).fetchone()
+        except sqlite3.OperationalError as exc:
+            raise ValueError(f"The route table at {self.path} has no aircraft types. Rebuild "
+                             f"it with: python -m flight_brief.vrs --out {self.path}") from exc
+        return (row[0], row[1]) if row else None
 
     def airport(self, code: str) -> Airport | None:
         """An airport by ICAO code (four characters) or IATA code (three)."""
