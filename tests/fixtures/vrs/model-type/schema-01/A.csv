@@ -1,0 +1,5 @@
+﻿ICAO,Manufacturer,Model,Engines,EngineTypeCode,EnginePlacementCode,SpeciesCode,WakeTurbulenceCode,IsActive
+A139,Agusta,AW-139,2,T,,H,L,1
+A320,Airbus,A-320,2,J,,L,M,1
+AT72,ATR,ATR-72-201,2,T,,L,M,1
+AT76,ATR,ATR P-72,2,T,,L,M,1
