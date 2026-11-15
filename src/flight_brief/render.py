@@ -62,7 +62,8 @@ def render(brief: Brief) -> str:
            + (f" . callsign {f.callsign}" if f.callsign else "")]
     out.append(f"Departs {_local(f.departure_utc, f.origin.tz)} ({hhmm(f.departure_utc)}), "
                f"as you entered . assumed FL{f.cruise_fl}, {f.groundspeed_kt:.0f} kt"
-               f"{' from your times' if f.arrival_source == 'user input' else ''} . "
+               + (" from your times" if f.arrival_source == "user input"
+                  else f" for {f.aircraft}" if f.aircraft else "") + " . "
                "route: great-circle guess")
     if brief.status != "ok":
         return "\n".join([*out, "", brief.message or "", "", *brief.notes])

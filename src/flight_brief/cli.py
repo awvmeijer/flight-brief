@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+from .aircraft import lookup
 from .brief import arrival_utc, make_brief, to_utc
 from .render import render
 from .resolve import Leg, resolve, typed_leg
@@ -52,6 +53,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--airline", help="ICAO airline code, when the flight code is shared")
     parser.add_argument("--from", dest="origin", help="origin airport, when the number does not map")
     parser.add_argument("--to", dest="destination", help="destination airport")
+    parser.add_argument("--aircraft", help="aircraft type: an ICAO code such as AT72 or A320, "
+                                           "or turboprop, jet or piston. Sets the default "
+                                           "cruise level and groundspeed; --arr, --gs and "
+                                           "--fl each take precedence over it")
     parser.add_argument("--fl", type=int, help="cruise flight level, instead of the default")
     parser.add_argument("--gs", type=float, help="groundspeed in kt, instead of the default")
     parser.add_argument("--json", action="store_true", help="print the brief record")
@@ -96,9 +101,10 @@ def main(argv: list[str] | None = None) -> int:
         departure = to_utc(day, args.dep, leg.origin.tz)
         arrival = arrival_utc(departure, args.arr, leg.destination.tz) if args.arr else None
         assert found.code is not None
+        aircraft = lookup(args.aircraft, table) if args.aircraft else None
         brief = make_brief(found.code, leg, day, departure, _as_of(args.as_of), args.snapshots,
                            callsign=callsign, cruise_fl=args.fl, groundspeed_kt=args.gs,
-                           arrival=arrival)
+                           arrival=arrival, aircraft=aircraft)
     except ValueError as exc:
         return _fail(args, "invalid", str(exc))
     print(json.dumps(brief.record(), indent=2) if args.json else render(brief))

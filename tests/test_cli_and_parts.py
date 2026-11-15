@@ -295,3 +295,114 @@ def test_cli_resolves_a_flight_number_from_the_route_supplement(
     assert out[0] == ("VT956 . Papeete to Gambier Islands . leg 1 . NTAA to NTGJ . "
                       "callsign VTA956")
     assert out[2].startswith("Arrives Tue 17 Nov 11:15 UTC-9 (20:15 UTC), as you entered")
+
+
+# --- defaults from a typed aircraft type -----------------------------------------------------
+
+VT956 = ["VT956", "2026-11-17", "--dep", "06:30", "--from", "PPT", "--to", "GMR",
+         "--as-of", "2026-11-17T10:00"]
+
+
+def test_a_turboprop_type_sets_speed_and_level_and_counts_ground_time(
+        table: vrs.RouteTable, capsys: pytest.CaptureFixture[str]) -> None:
+    # Air Tahiti VT956 on an ATR 72 is scheduled to arrive at 11:15 UTC-9, 20:15 UTC
+    assert cli.main(run(table, *VT956, "--aircraft", "AT72", "--json")) == 0
+    f = json.loads(capsys.readouterr().out)["flight"]
+    arrival = datetime.fromisoformat(f["arrival_utc"].replace("Z", "+00:00"))
+    assert abs(arrival - datetime(2026, 11, 17, 20, 15, tzinfo=UTC)) <= timedelta(minutes=15)
+    assert (f["groundspeed_kt"], f["cruise_fl"], f["aircraft"]) == (275.0, 240, "AT72")
+    assert f["arrival_source"] == "estimate"
+    notes = " | ".join(f["assumptions"])
+    assert "Groundspeed 275 kt assumed for AT72, a turboprop" in notes
+    assert "Cruise level FL240 assumed for AT72, a turboprop" in notes
+    assert "this project's round number, not from a source" in notes
+    assert "30 minutes on the ground (20 before take-off, 10 after landing)" in notes
+
+    assert cli.main(run(table, *VT956, "--aircraft", "at-72")) == 0
+    assert "assumed FL240, 275 kt for AT72 ." in capsys.readouterr().out.splitlines()[1]
+
+
+def test_without_a_type_and_with_a_jet_type_the_distance_bands_decide(
+        table: vrs.RouteTable, capsys: pytest.CaptureFixture[str]) -> None:
+    base = ["SQ231", "2026-11-04", "--dep", "08:00", "--as-of", "2026-11-03T23:00", "--json"]
+    flights = []
+    for extra in ([], ["--aircraft", "A320"], ["--aircraft", "jet"]):
+        assert cli.main(run(table, *base, *extra)) == 0
+        flights.append(json.loads(capsys.readouterr().out)["flight"])
+    plain, a320, word = flights
+    assert (plain["groundspeed_kt"], plain["cruise_fl"]) == (480.0, 380)
+    assert plain["arrival_utc"].startswith("2026-11-04T07:04") and plain["aircraft"] is None
+    for typed in (a320, word):
+        for key in ("groundspeed_kt", "cruise_fl", "arrival_utc", "aircraft"):
+            assert typed[key] == plain[key]
+    assert "A320, a jet: no figure of its own, so the distance decides" in " ".join(
+        a320["assumptions"])
+
+
+def test_arr_gs_and_fl_each_take_precedence_over_the_type(
+        table: vrs.RouteTable, capsys: pytest.CaptureFixture[str]) -> None:
+    def flight(*extra: str) -> dict:
+        assert cli.main(run(table, *VT956, "--aircraft", "AT72", "--json", *extra)) == 0
+        return json.loads(capsys.readouterr().out)["flight"]
+
+    arr = flight("--arr", "11:45")  # 4 h 15 min gate to gate: 238 kt
+    assert round(arr["groundspeed_kt"]) == 238 and arr["cruise_fl"] == 240
+    assert arr["arrival_utc"] == "2026-11-17T20:45:00Z" and arr["aircraft"] is None
+    assert "this replaces the 275 kt assumed for AT72" in " ".join(arr["assumptions"])
+
+    gs = flight("--gs", "250")
+    assert gs["groundspeed_kt"] == 250.0 and gs["cruise_fl"] == 240 and gs["aircraft"] is None
+    assert "Groundspeed 250 kt as you entered; this replaces the 275 kt assumed for AT72" in (
+        gs["assumptions"])
+    assert not any("minutes on the ground" in a for a in gs["assumptions"])
+
+    fl = flight("--fl", "200")
+    assert fl["cruise_fl"] == 200 and fl["groundspeed_kt"] == 275.0
+    assert "Cruise level FL200 as you entered; this replaces FL240 assumed for AT72" in (
+        fl["assumptions"])
+
+
+@pytest.mark.parametrize(("typed", "speed", "level"), [
+    ("turboprop", 275.0, 240), ("DH8D", 360.0, 240), ("Q400", 360.0, 240), ("C172", 140.0, 80),
+])
+def test_types_and_words_the_brief_knows(table: vrs.RouteTable, typed: str, speed: float,
+                                         level: int) -> None:
+    from flight_brief.aircraft import lookup
+
+    found = lookup(typed, table)
+    assert (found.groundspeed_kt, found.cruise_fl) == (speed, level)
+
+
+@pytest.mark.parametrize(("typed", "says"), [
+    ("ZZZZ", "'ZZZZ' is not an aircraft type this brief knows. Use an ICAO type code"),
+    ("A139", "'A139' is not an aeroplane this brief has a default speed for"),  # a helicopter
+])
+def test_an_unknown_type_is_refused(table: vrs.RouteTable, typed: str, says: str,
+                                    capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(run(table, *VT956, "--aircraft", typed, "--json")) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "invalid" and says in out["message"]
+
+
+def test_a_table_built_before_aircraft_types_says_to_rebuild(tmp_path: Path) -> None:
+    import sqlite3
+
+    from flight_brief.aircraft import lookup
+
+    vrs.build([], tmp_path / "t.sqlite", lambda lat, lon: None)
+    db = sqlite3.connect(tmp_path / "t.sqlite")
+    db.execute("DROP TABLE model_types")
+    db.commit()
+    db.close()
+    with pytest.raises(ValueError, match="has no aircraft types. Rebuild it with"):
+        lookup("AT72", vrs.RouteTable(tmp_path / "t.sqlite"))
+
+
+def test_a_number_from_the_route_supplement_takes_an_aircraft_type(
+        table: vrs.RouteTable, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(run(table, "VT956", "2026-11-17", "--dep", "06:30", "--aircraft", "AT72",
+                        "--as-of", "2026-11-17T10:00")) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].endswith("NTAA to NTGJ . callsign VTA956")
+    assert "assumed FL240, 275 kt for AT72 ." in out[1]
+    assert out[2].startswith("Arrives about Tue 17 Nov 11:14 UTC-9 (20:14 UTC)")
