@@ -289,6 +289,16 @@ def test_cli_briefs_a_turboprop_flight_to_an_airport_from_the_supplement(
     assert out[2].startswith("Arrives Tue 17 Nov 11:15 UTC-9 (20:15 UTC), as you entered . 893 nm")
 
 
+def test_cli_resolves_a_flight_number_from_the_route_supplement(
+        table: vrs.RouteTable, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(run(table, "VT956", "2026-11-17", "--dep", "06:30", "--arr", "11:15",
+                        "--as-of", "2026-11-17T10:00")) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == ("VT956 . Papeete to Gambier Islands . leg 1 . NTAA to NTGJ . "
+                      "callsign VTA956")
+    assert out[2].startswith("Arrives Tue 17 Nov 11:15 UTC-9 (20:15 UTC), as you entered")
+
+
 # --- defaults from a typed aircraft type -----------------------------------------------------
 
 VT956 = ["VT956", "2026-11-17", "--dep", "06:30", "--from", "PPT", "--to", "GMR",
@@ -388,6 +398,16 @@ def test_a_table_built_before_aircraft_types_says_to_rebuild(tmp_path: Path) -> 
     db.close()
     with pytest.raises(ValueError, match="has no aircraft types. Rebuild it with"):
         lookup("AT72", vrs.RouteTable(tmp_path / "t.sqlite"))
+
+
+def test_a_number_from_the_route_supplement_takes_an_aircraft_type(
+        table: vrs.RouteTable, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(run(table, "VT956", "2026-11-17", "--dep", "06:30", "--aircraft", "AT72",
+                        "--as-of", "2026-11-17T10:00")) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].endswith("NTAA to NTGJ . callsign VTA956")
+    assert "assumed FL240, 275 kt for AT72 ." in out[1]
+    assert out[2].startswith("Arrives about Tue 17 Nov 11:14 UTC-9 (20:14 UTC)")
 
 
 # --- the same time on the ground however the speed is found ----------------------------------
