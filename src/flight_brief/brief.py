@@ -53,10 +53,14 @@ NEAR_NM = 150.0
 CORRIDOR_NM = 100.0
 CORRIDOR_FT = 4000
 REPORT_AGE_H = 3.0
-# A typed arrival time is gate to gate. The time on the ground at each end is taken off before
-# the groundspeed is worked out, and the airborne part sits between the two.
+# Departure and arrival times are gate times, typed or estimated. On every path the flight is
+# airborne from TAXI_OUT after departure to TAXI_IN before arrival: a typed arrival time has
+# both taken off before the groundspeed is worked out, and an estimated arrival has both added.
 TAXI_OUT = timedelta(minutes=20)
 TAXI_IN = timedelta(minutes=10)
+GROUND = (f"{(TAXI_OUT + TAXI_IN) // timedelta(minutes=1)} minutes on the ground counted: "
+          f"take-off {TAXI_OUT // timedelta(minutes=1)} minutes after the departure time, at "
+          f"the gate {TAXI_IN // timedelta(minutes=1)} minutes after landing")
 # A typed arrival time is refused when the groundspeed it gives is outside these limits. The
 # slowest accepted speed rises with distance. Under 800 nm a turboprop on a short hop is real
 # and the time on the ground dominates. From 800 to 1,200 nm turboprops still fly (an ATR 72
@@ -209,6 +213,8 @@ class FlightBlock(Out):
     departure_local: str  # as the user entered it, with the origin's UTC offset
     departure_source: str = "user input"
     arrival_utc: datetime  # as the user entered it, or from distance and assumed groundspeed
+    takeoff_utc: datetime  # departure plus the assumed time to take-off; hour 1 starts here
+    landing_utc: datetime  # arrival less the assumed time from landing to the gate
     arrival_source: Literal["estimate", "user input"] = "estimate"
     aircraft: str | None = None  # the type the user typed, when it set a default
     distance_nm: float
@@ -287,14 +293,14 @@ def defaults(distance: float) -> tuple[int, float]:
 def make_flight(code: str, leg: Leg, departure: datetime, cruise_fl: int | None = None,
                 groundspeed_kt: float | None = None, arrival: datetime | None = None,
                 aircraft: Aircraft | None = None) -> PassengerFlight:
-    """`departure` and `arrival` are gate times. With an arrival time the flight is airborne
-    from `TAXI_OUT` after departure to `TAXI_IN` before arrival, at one groundspeed.
+    """`departure` and `arrival` are gate times. However the groundspeed is found, the
+    flight is airborne from `TAXI_OUT` after departure, at one groundspeed, and reaches the
+    gate `TAXI_IN` after landing. The returned flight's `departure` is the take-off time.
 
     Where each number comes from, first match wins. Groundspeed: the arrival time, then a
     typed groundspeed, then the aircraft type, then the distance band. Cruise level: a typed
     level, then the aircraft type, then the distance band. A jet type has no figure of its
-    own, so it leaves the distance bands in place. When the aircraft type sets the speed,
-    that speed is a cruise speed, so the time on the ground is counted as well."""
+    own, so it leaves the distance bands in place."""
     a, b = leg.origin, leg.destination
     distance = distance_nm(a.lat, a.lon, b.lat, b.lon)
     fl, kt = defaults(distance)
@@ -302,14 +308,12 @@ def make_flight(code: str, leg: Leg, departure: datetime, cruise_fl: int | None 
     level = f"Cruise level FL{fl} assumed from the distance ({distance:,.0f} nm)"
     band_speed = f"Groundspeed {kt:.0f} kt assumed for the whole flight; winds are not counted"
     replaced = ""
-    by_type = False  # the aircraft type sets the speed
     if aircraft is not None and aircraft.cruise_fl is not None:
         fl = aircraft.cruise_fl
         level = f"Cruise level FL{fl} assumed for {aircraft.label} ({own})"
     if aircraft is not None and aircraft.groundspeed_kt is not None:
         kt = aircraft.groundspeed_kt
         replaced = f"; this replaces the {kt:.0f} kt assumed for {aircraft.code}"
-        by_type = arrival is None and not groundspeed_kt
         band_speed = (f"Groundspeed {kt:.0f} kt assumed for {aircraft.label}, for the whole "
                       f"flight ({own}); winds are not counted")
     elif aircraft is not None:
@@ -337,26 +341,20 @@ def make_flight(code: str, leg: Leg, departure: datetime, cruise_fl: int | None 
                  f"the departure and arrival times you entered less {taxi // timedelta(minutes=1)}"
                  " minutes on the ground" + replaced)
         times = "Departure and arrival times as you entered"
-        departure += TAXI_OUT
-    elif by_type:
-        speed = band_speed
-        times = ("Departure time as you entered; arrival is an estimate from distance and "
-                 f"speed plus {taxi // timedelta(minutes=1)} minutes on the ground "
-                 f"({TAXI_OUT // timedelta(minutes=1)} before take-off, "
-                 f"{TAXI_IN // timedelta(minutes=1)} after landing)")
-        departure += TAXI_OUT
     else:
         speed = (f"Groundspeed {groundspeed_kt:.0f} kt as you entered" + replaced
                  if groundspeed_kt else band_speed)
-        times = "Departure time as you entered; arrival is an estimate from distance and speed"
+        times = ("Departure time as you entered; arrival is an estimate from distance and "
+                 "speed plus the time on the ground")
     notes = [
         level,
         speed,
+        GROUND,
         "Route is a great-circle guess, not the filed route",
         times,
     ]
     return PassengerFlight(
-        flight_id=code, origin=a.code, destination=b.code, departure=departure,
+        flight_id=code, origin=a.code, destination=b.code, departure=departure + TAXI_OUT,
         cruise_fl=cruise_fl or fl, groundspeed_kt=groundspeed_kt or kt,
         route=[Waypoint(name=a.code, lat=a.lat, lon=a.lon),
                Waypoint(name=b.code, lat=b.lat, lon=b.lon)],
@@ -601,15 +599,16 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
     flight = make_flight(code, leg, departure, cruise_fl, groundspeed_kt, arrival, aircraft)
     points = timeline(flight)
     typed = arrival is not None
-    # The flight model takes off TAXI_OUT after the gate time whenever it counts ground time.
-    landed_at_gate = points[-1].t + (TAXI_IN if flight.departure != departure else timedelta(0))
-    arrival = arrival or landed_at_gate
+    # Gate to gate is `departure` to `arrival`; the hours of the brief run take-off to landing.
+    takeoff, landing = flight.departure, points[-1].t
+    arrival = arrival or landing + TAXI_IN
     tz = leg.origin.tz
     local = departure.astimezone(ZoneInfo(tz)) if tz else departure
     block = FlightBlock(
         code=code, callsign=callsign, origin=_place(leg.origin),
         destination=_place(leg.destination), departure_utc=departure,
         departure_local=local.isoformat(timespec="minutes"), arrival_utc=arrival,
+        takeoff_utc=takeoff, landing_utc=landing,
         arrival_source="user input" if typed else "estimate",
         aircraft=aircraft.code if aircraft is not None and not typed and not groundspeed_kt
         and aircraft.groundspeed_kt is not None else None,
@@ -639,8 +638,8 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
     sig_late = expired_on_arrival(flight, sigmets, as_of)
 
     over_us = [any(in_conus(p.lat, p.lon) for p in _segment(
-        points, departure + timedelta(hours=i), min(departure + timedelta(hours=i + 1), arrival)))
-        for i in range(math.ceil((arrival - departure) / timedelta(hours=1)))]
+        points, takeoff + timedelta(hours=i), min(takeoff + timedelta(hours=i + 1), landing)))
+        for i in range(math.ceil((landing - takeoff) / timedelta(hours=1)))]
     gair_envs: list[Envelope] = []
     gairmets: list[Hazard] = []
     windows: list[tuple[datetime, datetime]] = []
@@ -659,8 +658,8 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
 
     hours: list[Hour] = []
     for i, us in enumerate(over_us):
-        start = departure + timedelta(hours=i)
-        end = min(start + timedelta(hours=1), arrival)
+        start = takeoff + timedelta(hours=i)
+        end = min(start + timedelta(hours=1), landing)
         seg = _segment(points, start, end)
         lead = (start - as_of).total_seconds() / 3600
         sources: dict[str, SourceLine] = {}

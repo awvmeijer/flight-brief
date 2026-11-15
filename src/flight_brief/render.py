@@ -73,6 +73,8 @@ def render(brief: Brief) -> str:
     out.append(arrives.format(_local(f.arrival_utc, f.destination.tz), hhmm(f.arrival_utc))
                + f" . {f.distance_nm:,.0f} nm . "
                f"issued {age(lead)} before departure")
+    out.append(f"In the air about {hhmm(f.takeoff_utc)} to {hhmm(f.landing_utc)} . "
+               "hour 1 starts at take-off")
     out += ["", brief.summary, ""]
     out.append("hour  " + " ".join(f"{h.index:>2}" for h in brief.hours))
     out.append("      " + " ".join(f"{SYMBOL[h.state]:>2}" for h in brief.hours) + "     " + LEGEND)
