@@ -1,13 +1,14 @@
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from brief_helpers import SEVERITY, STORE
 from flight_brief import airport_wx, cli, vrs
 from flight_brief.awc import clean, describe, stamp
-from flight_brief.brief import in_conus, reports_cover
+from flight_brief.brief import GROUND, in_conus, reports_cover
 from flight_brief.gairmet import from_gairmet
 
 
@@ -174,7 +175,8 @@ def test_a_typed_arrival_time_sets_the_groundspeed_less_taxi(table: vrs.RouteTab
     assert b.flight.arrival_utc == arrival and b.flight.arrival_source == "user input"
     assert plain.flight.arrival_source == "estimate"
     assert b.flight.groundspeed_kt == pytest.approx(b.flight.distance_nm / 11.0, rel=1e-3)
-    assert len(b.hours) == 12 and b.hours[-1].end == arrival
+    assert len(b.hours) == 11 and b.hours[-1].end == arrival - timedelta(minutes=10)
+    assert b.hours[0].start == b.flight.departure_utc + timedelta(minutes=20)
     assert b.airports["destination"].at == arrival
     assert any("30 minutes" in a and "arrival" in a for a in b.flight.assumptions)
     assert "as you entered" in render(b).splitlines()[2]
@@ -316,7 +318,7 @@ def test_a_turboprop_type_sets_speed_and_level_and_counts_ground_time(
     assert "Groundspeed 275 kt assumed for AT72, a turboprop" in notes
     assert "Cruise level FL240 assumed for AT72, a turboprop" in notes
     assert "this project's round number, not from a source" in notes
-    assert "30 minutes on the ground (20 before take-off, 10 after landing)" in notes
+    assert GROUND in notes
 
     assert cli.main(run(table, *VT956, "--aircraft", "at-72")) == 0
     assert "assumed FL240, 275 kt for AT72 ." in capsys.readouterr().out.splitlines()[1]
@@ -331,7 +333,7 @@ def test_without_a_type_and_with_a_jet_type_the_distance_bands_decide(
         flights.append(json.loads(capsys.readouterr().out)["flight"])
     plain, a320, word = flights
     assert (plain["groundspeed_kt"], plain["cruise_fl"]) == (480.0, 380)
-    assert plain["arrival_utc"].startswith("2026-11-04T07:04") and plain["aircraft"] is None
+    assert plain["arrival_utc"].startswith("2026-11-04T07:34") and plain["aircraft"] is None
     for typed in (a320, word):
         for key in ("groundspeed_kt", "cruise_fl", "arrival_utc", "aircraft"):
             assert typed[key] == plain[key]
@@ -354,7 +356,7 @@ def test_arr_gs_and_fl_each_take_precedence_over_the_type(
     assert gs["groundspeed_kt"] == 250.0 and gs["cruise_fl"] == 240 and gs["aircraft"] is None
     assert "Groundspeed 250 kt as you entered; this replaces the 275 kt assumed for AT72" in (
         gs["assumptions"])
-    assert not any("minutes on the ground" in a for a in gs["assumptions"])
+    assert GROUND in gs["assumptions"]
 
     fl = flight("--fl", "200")
     assert fl["cruise_fl"] == 200 and fl["groundspeed_kt"] == 275.0
@@ -406,3 +408,48 @@ def test_a_number_from_the_route_supplement_takes_an_aircraft_type(
     assert out[0].endswith("NTAA to NTGJ . callsign VTA956")
     assert "assumed FL240, 275 kt for AT72 ." in out[1]
     assert out[2].startswith("Arrives about Tue 17 Nov 11:14 UTC-9 (20:14 UTC)")
+
+
+# --- the same time on the ground however the speed is found ----------------------------------
+
+def test_the_same_speed_gives_the_same_arrival_on_every_path(
+        table: vrs.RouteTable, capsys: pytest.CaptureFixture[str]) -> None:
+    def flight(*extra: str) -> dict:
+        assert cli.main(run(table, *VT956, "--json", *extra)) == 0
+        return json.loads(capsys.readouterr().out)
+
+    def at(text: str) -> datetime:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+    by_type = flight("--aircraft", "AT72")           # 275 kt from the type
+    by_gs = flight("--gs", "275")                    # 275 kt typed
+    both = flight("--aircraft", "AT72", "--gs", "275")
+    arrival = at(by_type["flight"]["arrival_utc"])
+    # The arrival time the type gives, typed back in, must give the same 275 kt.
+    local = arrival.astimezone(ZoneInfo("Pacific/Gambier")).strftime("%H:%M")
+    by_arr = flight("--arr", local)
+    band = flight()                                  # 460 kt from the distance
+
+    for rec in (by_type, by_gs, both, by_arr):
+        f = rec["flight"]
+        assert f["groundspeed_kt"] == pytest.approx(275.0, abs=1.5)
+        assert abs(at(f["arrival_utc"]) - arrival) < timedelta(minutes=1)
+        assert abs(at(f["landing_utc"]) - at(by_type["flight"]["landing_utc"])) < timedelta(minutes=1)
+    for rec in (by_type, by_gs, both, by_arr, band):
+        f = rec["flight"]
+        departure = at(f["departure_utc"])
+        assert at(f["takeoff_utc"]) == departure + timedelta(minutes=20)
+        assert at(f["arrival_utc"]) - at(f["landing_utc"]) == timedelta(minutes=10)
+        assert at(rec["hours"][0]["from"]) == at(f["takeoff_utc"])
+        assert at(rec["hours"][-1]["to"]) == at(f["landing_utc"])
+        assert f["assumptions"].count(GROUND) == 1
+    airborne = at(band["flight"]["landing_utc"]) - at(band["flight"]["takeoff_utc"])
+    assert airborne / timedelta(hours=1) == pytest.approx(band["flight"]["distance_nm"] / 460, abs=0.01)
+
+
+def test_the_text_says_when_the_flight_is_in_the_air(
+        table: vrs.RouteTable, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(run(table, *VT956, "--aircraft", "AT72")) == 0
+    out = capsys.readouterr().out
+    assert "In the air about 16:50 UTC to 20:04 UTC . hour 1 starts at take-off" in out
+    assert "30 minutes on the ground counted: take-off 20 minutes after the departure time" in out

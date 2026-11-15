@@ -15,10 +15,12 @@ STORE = Path(__file__).parent / "fixtures" / "snapshots"
 SEVERITY = re.compile(r"\b(light|moderate|severe|lgt|mod|sev|heavy|extreme)\b", re.IGNORECASE)
 
 # (code, local date, local time, issued at UTC): real past flights inside the fixture store.
-SQ231 = ("SQ231", "2026-11-04", "08:00", "2026-11-03T23:00")  # thunderstorm warning, hour 1
-UA837 = ("UA837", "2026-11-02", "18:00", "2026-11-03T01:00")  # turbulence warnings, antimeridian
-AA273 = ("AA273", "2026-11-13", "22:00", "2026-11-14T03:00")  # US convective SIGMET
-UA1175 = ("UA1175", "2026-11-07", "18:00", "2026-11-08T01:00")  # a quiet day
+# The times are gate times 20 minutes before a round hour, so that take-off, where hour 1
+# starts, falls on the round hour the replays were first worked out for.
+SQ231 = ("SQ231", "2026-11-04", "07:40", "2026-11-03T23:00")  # thunderstorm warning, hour 1
+UA837 = ("UA837", "2026-11-02", "17:40", "2026-11-03T01:00")  # turbulence warnings, antimeridian
+AA273 = ("AA273", "2026-11-13", "21:40", "2026-11-14T03:00")  # US convective SIGMET
+UA1175 = ("UA1175", "2026-11-07", "17:40", "2026-11-08T01:00")  # a quiet day
 
 
 def utc(text: str) -> datetime:
