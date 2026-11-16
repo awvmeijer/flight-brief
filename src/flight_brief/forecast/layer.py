@@ -16,6 +16,7 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
+from . import shear_tiles
 from .tiles import Tile, tile_name
 
 RELEASES = "https://github.com/awvmeijer/flight-brief/releases/download"
@@ -112,7 +113,6 @@ class TileSource:
 
     def shear(self, as_of: dt.datetime):
         """The newest wind-shear index tile known at `as_of`: (tile, run, url)."""
-        from . import shear_tiles
         return self._newest(runs_before(as_of, SHEAR_LAG, SHEAR_LOOK_BACK),
                             lambda run: f"shear-tiles-{run:%Y-%m}", shear_tiles.tile_name,
                             shear_tiles.ShearTile.from_bytes)
