@@ -146,3 +146,109 @@ def test_the_forecast_lines_name_no_intensity(table: vrs.RouteTable, tmp_path: P
             if key in h.sources:
                 assert not SEVERITY.search(h.sources[key].text)
     assert not any(SEVERITY.search(s) for s in own_strings(b.record()))
+
+
+# --- the wind-shear index --------------------------------------------------------------------
+
+from flight_brief.brief import SHEAR_FLAG, SHEAR_RATES  # noqa: E402
+from flight_brief.forecast import shear_tiles as st  # noqa: E402
+
+SHEAR_RUN = utc("2026-11-03T18:00")  # the newest GFS run posted by SQ231's issue time, 23:00
+
+
+def put_shear(root: Path, run: dt.datetime, value: float = 0.0,
+              spot: tuple[float, float, float] | None = None) -> TileSource:
+    """A tile holding `value` everywhere; `spot` = (lat, lon, value) sets one grid point in
+    every hour and layer."""
+    ti1 = np.full((len(st.FORECAST_HOURS), len(st.LAYER_FLS), 721, 1440), value)
+    if spot:
+        row, col = st.grid_index(spot[0], spot[1])
+        ti1[:, :, row, col] = spot[2]
+    tile = st.ShearTile(st.quantise(ti1), list(st.FORECAST_HOURS), list(st.LAYER_FLS),
+                        {"format": st.FORMAT, "run": run.strftime("%Y-%m-%dT%H:%MZ"),
+                         "step": st.STEP})
+    data = tile.to_bytes()
+    assert st.ShearTile.from_bytes(data).run == run
+    path = root / f"shear-tiles-{run:%Y-%m}" / st.tile_name(run)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return TileSource(root)
+
+
+def test_the_index_speaks_for_every_hour_of_a_long_flight_the_evening_before(
+        table: vrs.RouteTable, tmp_path: Path) -> None:
+    b = brief(table, *SQ231, tiles=put_shear(tmp_path, SHEAR_RUN, 3.0))
+    assert [h.sources["shear"].state for h in b.hours] == ["nothing_found"] * len(b.hours)
+    assert all(h.shear and h.shear["value"] == 3.0 and not h.shear["flagged"] for h in b.hours)
+    assert f"Wind-shear index speak for {len(b.hours)} of {len(b.hours)} hours" in b.summary
+    assert any(p.source == "wind-shear index" and p.issued_at == SHEAR_RUN and not p.stale
+               for p in b.provenance)
+
+
+def test_an_index_value_at_the_flag_reads_elevated_wind_shear_with_its_measured_rates(
+        table: vrs.RouteTable, tmp_path: Path) -> None:
+    b = brief(table, *SQ231, tiles=put_shear(tmp_path, SHEAR_RUN, SHEAR_FLAG))
+    line = b.hours[3].sources["shear"]
+    assert line.state == "flagged"
+    assert line.text == f"Elevated wind shear: index 8, flag at 8 ({SHEAR_RATES})"
+    assert b.hours[3].state == "flagged"
+    text = render(b)
+    assert "Wind-shear index" in text and "Elevated wind shear" in text
+
+
+def test_the_index_finds_a_high_value_near_the_route_and_only_there(
+        table: vrs.RouteTable, tmp_path: Path) -> None:
+    quiet = brief(table, *SQ231, tiles=put_shear(tmp_path / "a", SHEAR_RUN, 1.0))
+    lat, lon = quiet.route.points[len(quiet.route.points) // 2]
+    b = brief(table, *SQ231, tiles=put_shear(tmp_path / "b", SHEAR_RUN, 1.0, (lat, lon, 20.0)))
+    flagged = [h.index for h in b.hours if h.sources["shear"].state == "flagged"]
+    assert 1 <= len(flagged) <= 2 and b.hours[flagged[0] - 1].shear["value"] == 20.0
+    far = brief(table, *SQ231, tiles=put_shear(tmp_path / "c", SHEAR_RUN, 1.0,
+                                               (lat + 3.0, lon, 20.0)))
+    assert not any(h.sources["shear"].state == "flagged" for h in far.hours)
+
+
+def test_a_cruise_level_outside_the_measured_range_is_not_covered(
+        table: vrs.RouteTable, tmp_path: Path) -> None:
+    b = brief(table, *SQ231, tiles=put_shear(tmp_path, SHEAR_RUN, 20.0), cruise_fl=250)
+    assert {h.sources["shear"].state for h in b.hours} == {"not_covered"}
+    assert all(h.shear is None for h in b.hours)
+
+
+def test_no_index_tile_is_stale_never_nothing_found(
+        table: vrs.RouteTable, tmp_path: Path) -> None:
+    b = brief(table, *SQ231, tiles=TileSource(tmp_path))
+    assert {h.sources["shear"].state for h in b.hours} == {"stale"}
+    assert any(p.source == "wind-shear index" and p.stale for p in b.provenance)
+    assert "NOT an all clear" in render(b)
+
+
+def test_an_old_index_run_is_used_and_named_as_old(
+        table: vrs.RouteTable, tmp_path: Path) -> None:
+    old = SHEAR_RUN - dt.timedelta(hours=18)
+    b = brief(table, *SQ231, tiles=put_shear(tmp_path, old, 2.0))
+    assert b.hours[0].sources["shear"].state == "nothing_found"
+    note = next(p.note for p in b.provenance if p.source == "wind-shear index")
+    assert note and "Wind-shear index last updated" in note and note in render(b)
+
+
+def test_hours_beyond_the_index_horizon_are_too_early(
+        table: vrs.RouteTable, tmp_path: Path) -> None:
+    code, day, clock, _ = SQ231
+    at = utc("2026-11-02T04:00")  # about 44 h before departure; newest run is 00Z
+    b = brief(table, code, day, clock, at, tiles=put_shear(tmp_path, utc("2026-11-02T00:00")))
+    states = [h.sources["shear"].state for h in b.hours]
+    assert states[0] == "nothing_found" and states[-1] == "too_early"
+    last = b.hours[-1]
+    assert last.sources["shear"].check_after == (
+        last.end - dt.timedelta(hours=layer.SHEAR_REACH_H) + layer.SHEAR_LAG)
+
+
+def test_over_the_us_the_two_forecasts_can_disagree(
+        table: vrs.RouteTable, tmp_path: Path) -> None:
+    put_gtg(tmp_path, RUN)
+    src = put_shear(tmp_path, utc("2026-11-13T18:00"), 20.0)
+    b = brief(table, *AA273, tiles=src)
+    h = next(h for h in b.hours if "gtg" in h.sources)
+    assert h.sources["shear"].state == "flagged" and h.sources["gtg"].state == "nothing_found"
+    assert h.agreement == "disagree" and "the sources disagree" in render(b)
