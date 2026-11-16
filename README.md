@@ -2,20 +2,23 @@
 
 A planned page where a passenger types a flight code and date and gets a weather and turbulence brief, with a public record of how the forecasts did. The design is [`docs/DESIGN.md`](docs/DESIGN.md); the data-source recon is [`docs/RECON.md`](docs/RECON.md).
 
-So far the repo holds the docs, the core package and brief engine with a command-line brief (Phase 1), and the two early pieces of the forecast layer (Phase 2). The forecast layer is not yet read by the brief, and the page is not started.
+So far the repo holds the docs, the core package and brief engine with a command-line brief that fetches live (Phase 1), and the two early pieces of the forecast layer (Phase 2). The forecast layer is not yet read by the brief, and the page is not started.
 
 ## The brief (Phase 1)
 
-`brief` resolves a flight code to its airports, takes the departure time as typed, and prints what each source knows for each hour of the flight, read offline from a snapshot directory.
+`brief` resolves a flight code to its airports, takes the departure time as typed, and prints what each source knows for each hour of the flight. By default it is live: it fetches what the brief needs from NOAA's Aviation Weather Center at that moment. With `--snapshots` it reads a snapshot directory offline instead.
 
 ```bash
 uv run --extra routes python -m flight_brief.vrs --out data/vrs.sqlite   # once: build the route table
-uv run brief SQ231 2026-11-04 --dep 08:00 --as-of 2026-11-03T23:00 --snapshots tests/fixtures/snapshots
+uv run brief UA29 2026-11-17 --dep 08:45                                  # live, for a flight in the next 30 hours
+uv run brief SQ231 2026-11-04 --dep 08:00 --as-of 2026-11-03T23:00 --snapshots tests/fixtures/snapshots   # offline replay
 ```
 
-- **Arguments:** the date and `--dep` are local at the origin, and `--dep` and `--arr` are gate times. However the groundspeed is found (`--arr`, `--gs`, `--aircraft` or the distance), the brief counts 30 minutes on the ground: take-off 20 minutes after the departure time, and at the gate 10 minutes after landing. Hour 1 starts at take-off. `--as-of` is the UTC time the brief is issued at. `--json` prints the brief record of `docs/DESIGN.md` instead of text. `--leg` picks a leg of a multi-leg number, `--airline` picks one when a code is shared, and `--from` with `--to` give the airports when a number does not map. `--fl` and `--gs` replace the assumed cruise level and groundspeed. `--aircraft` takes an ICAO type code such as `AT72` or `A320`, or the word `turboprop`, `jet` or `piston`: a turboprop or piston type sets the default cruise level and groundspeed from this project's own table of round numbers, while a jet type leaves the distance defaults as they are. `--arr` and `--gs` take precedence over the type for the speed, and `--fl` for the level. `--arr` is the local arrival time at the destination: with it the groundspeed is worked out from the two gate times less 30 minutes on the ground, so each hour lines up with the right stretch of the route; without it the arrival is an estimate that counts no winds.
+- **Live:** without `--snapshots` the brief is issued now, for a flight that departs within the next 30 hours. One brief makes 3 to about 15 requests: one worldwide `sigmet` call, `taf` and `metar` for the two airports, the five G-AIRMET snapshots when the route crosses the contiguous US, and pilot reports for boxes along the part of the route flown within the next 6 hours, where the region has reports. What comes back is kept as snapshots in `--cache` (default `~/.cache/flight-brief/live`, or `$FLIGHT_BRIEF_CACHE`) and reused for 30 minutes, also by a brief for another flight. A request that fails or times out (10 seconds) does not stop the brief: that source reads "last updated ... ago". `--as-of` belongs to `--snapshots` and is refused without it. `FLIGHT_BRIEF_DEBUG=1` prints one line per request or cache hit on stderr. The cache is never cleared; delete the directory to start over.
+
+- **Arguments:** the date and `--dep` are local at the origin, and `--dep` and `--arr` are gate times. However the groundspeed is found (`--arr`, `--gs`, `--aircraft` or the distance), the brief counts 30 minutes on the ground: take-off 20 minutes after the departure time, and at the gate 10 minutes after landing. Hour 1 starts at take-off. `--as-of` is the UTC time an offline brief is issued at. `--json` prints the brief record of `docs/DESIGN.md` instead of text. `--leg` picks a leg of a multi-leg number, `--airline` picks one when a code is shared, and `--from` with `--to` give the airports when a number does not map. `--fl` and `--gs` replace the assumed cruise level and groundspeed. `--aircraft` takes an ICAO type code such as `AT72` or `A320`, or the word `turboprop`, `jet` or `piston`: a turboprop or piston type sets the default cruise level and groundspeed from this project's own table of round numbers, while a jet type leaves the distance defaults as they are. `--arr` and `--gs` take precedence over the type for the speed, and `--fl` for the level. `--arr` is the local arrival time at the destination: with it the groundspeed is worked out from the two gate times less 30 minutes on the ground, so each hour lines up with the right stretch of the route; without it the arrival is an estimate that counts no winds.
 - **Sources read:** SIGMETs from the `sigmet` feed, G-AIRMET high-level turbulence areas over the contiguous US, pilot reports within 100 nm and 4,000 ft of the route, and TAF and METAR for the two airports. The wind-shear index and GTG arrive with Phase 2, so `shear` and `gtg` are null in every record.
-- **Snapshots:** the layout of `oceanic-flight-watch`'s store, `<source>/<YYYY-MM-DD>/<HHMM>Z[_<tag>].json.gz`. That store has no G-AIRMETs; `python -m flight_brief.awc gairmet --at <time> --out <dir>` saves them in the same layout.
+- **Snapshots:** live and offline use one layout, that of `oceanic-flight-watch`'s store, `<source>/<YYYY-MM-DD>/<HHMM>Z[_<tag>].json.gz`. That store has no G-AIRMETs; `python -m flight_brief.awc gairmet --at <time> --out <dir>` saves them in the same layout.
 - **Route table:** built from [VRS standing-data](https://github.com/vradarserver/standing-data) (CC0), including its aircraft type codes, with each airport's time zone added by timezonefinder (boundary data from timezone-boundary-builder, ODbL). Airports VRS does not have come from a small supplement, `src/flight_brief/data/airports_extra.csv`, copied from [OurAirports](https://ourairports.com/data/) (public domain, The Unlicense); so far one, Totegegie in the Gambier Islands. Routes VRS does not have are in `routes_extra.csv` beside it: each is one fact typed by hand from the airline's schedule, not copied from a database; so far one, VT956 Papeete to Gambier. It is about 37 MB and is not committed.
 - **Wording:** the code never writes a severity word. An official source's own text is carried in `quoted` fields and printed inside quotation marks.
 
@@ -52,10 +55,13 @@ tile.sample(39.86, -104.67, flight_level=360, forecast_hour=6)   # EDR near Denv
 
 ```bash
 uv sync
-uv run pytest
+uv run pytest                      # no network
+uv run pytest -m network           # the tests that fetch from NOAA
+uv run brief UA29 2026-11-17 --dep 08:45   # live: your flight, local date and time at the origin
+FLIGHT_BRIEF_DEBUG=1 uv run brief UA29 2026-11-17 --dep 08:45 --cache /tmp/brief-cache   # show each request
 uv run brief SQ231 2026-11-04 --dep 08:00 --as-of 2026-11-03T23:00 --snapshots tests/fixtures/snapshots
 uv run python -m flight_brief.jobs.decode_check
 uv run python -m flight_brief.jobs.gtg_tiles --store dir:/tmp/tiles --max-runs 1 --verify
 ```
 
-Sources are keyless NOAA services only: GFS from the public AWS bucket, GTG from NOMADS, with a pause after every NOMADS request.
+Sources are keyless NOAA services only: the Aviation Weather Center API for the live brief (at most 100 requests a minute, one plain call each), GFS from the public AWS bucket, GTG from NOMADS, with a pause after every NOMADS request.
