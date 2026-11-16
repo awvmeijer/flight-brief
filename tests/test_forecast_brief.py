@@ -80,7 +80,7 @@ def test_a_us_route_gets_a_gtg_line_for_its_hours_over_the_us(
     for h in us_hours:
         assert h.sources["gtg"].state == "nothing_found"
         assert h.gtg is not None and h.gtg["edr"] == 0 and h.gtg["run"] == RUN.isoformat()
-    assert "GTG speak for" in b.summary
+    assert "GTG speaks for" in b.summary
     assert any(p.source == "gtg" and not p.stale for p in b.provenance)
 
 
@@ -180,7 +180,7 @@ def test_the_index_speaks_for_every_hour_of_a_long_flight_the_evening_before(
     b = brief(table, *SQ231, tiles=put_shear(tmp_path, SHEAR_RUN, 3.0))
     assert [h.sources["shear"].state for h in b.hours] == ["nothing_found"] * len(b.hours)
     assert all(h.shear and h.shear["value"] == 3.0 and not h.shear["flagged"] for h in b.hours)
-    assert f"Wind-shear index speak for {len(b.hours)} of {len(b.hours)} hours" in b.summary
+    assert f"Wind-shear index speaks for {len(b.hours)} of {len(b.hours)} hours" in b.summary
     assert any(p.source == "wind-shear index" and p.issued_at == SHEAR_RUN and not p.stale
                for p in b.provenance)
 
@@ -252,3 +252,14 @@ def test_over_the_us_the_two_forecasts_can_disagree(
     h = next(h for h in b.hours if "gtg" in h.sources)
     assert h.sources["shear"].state == "flagged" and h.sources["gtg"].state == "nothing_found"
     assert h.agreement == "disagree" and "the sources disagree" in render(b)
+
+
+def test_an_hour_a_newer_run_would_reach_is_stale_not_too_early(
+        table: vrs.RouteTable, tmp_path: Path) -> None:
+    # Issued at 03:00 with only the 12Z GTG run of the day before: it ends at 06Z, but the
+    # 00Z run is posted and reaches these hours, so the tile is late, not the forecast.
+    b = brief(table, *AA273, tiles=put_gtg(tmp_path, RUN - dt.timedelta(hours=12)))
+    states = {h.sources["gtg"].state for h in b.hours if "gtg" in h.sources and
+              h.end > RUN - dt.timedelta(hours=12) + dt.timedelta(hours=layer.GTG_REACH_H)}
+    assert states == {"stale"}
+    assert "GTG last updated 15 h ago" in render(b)

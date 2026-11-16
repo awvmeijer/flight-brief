@@ -479,6 +479,7 @@ class _Shear:
         self.cruise_fl = cruise_fl
         self.found = tiles.shear(as_of) if SHEAR_FL[0] <= cruise_fl <= SHEAR_FL[1] else None
         self.age = as_of - self.found[1] if self.found else None
+        self.newest = layer.runs_before(as_of, layer.SHEAR_LAG, 1)[0]  # the run posted by now
 
     def provenance(self, as_of: datetime) -> Provenance | None:
         if not SHEAR_FL[0] <= self.cruise_fl <= SHEAR_FL[1]:
@@ -506,6 +507,11 @@ class _Shear:
             return SourceLine(state="stale", text="Wind-shear index: no tile available"), None
         tile, run, _ = self.found
         if end > run + timedelta(hours=layer.SHEAR_REACH_H):
+            if end <= self.newest + timedelta(hours=layer.SHEAR_REACH_H):
+                # a run that reaches this hour is posted, but its tile is not here
+                assert self.age is not None
+                return SourceLine(state="stale", text=(
+                    f"Wind-shear index last updated {age(self.age)} ago")), None
             return _too_early(end - timedelta(hours=layer.SHEAR_REACH_H) + layer.SHEAR_LAG), None
         got = [x for x in (tile.sample(p.lat, p.lon, self.cruise_fl, p.t) for p in seg) if x]
         if not got:
@@ -531,6 +537,7 @@ class _Gtg:
         self.level_ok = GTG_FL[0] <= cruise_fl <= GTG_FL[1]
         self.found = tiles.gtg(as_of) if self.level_ok else None
         self.age = as_of - self.found[1] if self.found else None
+        self.newest = layer.runs_before(as_of, layer.GTG_LAG, 1)[0]  # the run posted by now
 
     def provenance(self, as_of: datetime) -> Provenance | None:
         if not self.level_ok:
@@ -555,6 +562,10 @@ class _Gtg:
             return None, None  # the line is left out, with a note
         tile, run, _ = self.found
         if end > run + timedelta(hours=layer.GTG_REACH_H):
+            if end <= self.newest + timedelta(hours=layer.GTG_REACH_H):
+                assert self.age is not None
+                return SourceLine(state="stale",
+                                  text=f"GTG last updated {age(self.age)} ago"), None
             return _too_early(end - timedelta(hours=layer.GTG_REACH_H) + layer.GTG_LAG), None
         level = min(tile.flight_levels, key=lambda fl: abs(fl - self.cruise_fl))
         values = []
@@ -721,7 +732,8 @@ def _summary(hours: list[Hour]) -> str:
         listed = [h for h in hours if key in h.sources]
         if listed:
             n = sum(h.sources[key].state in SPEAKS for h in listed)
-            parts.append(f"{name} speak for {n} of {len(hours)} hours")
+            verb = "speaks" if key in ("shear", "gtg") else "speak"
+            parts.append(f"{name} {verb} for {n} of {len(hours)} hours")
     return f"{head}. {'. '.join(parts)}."
 
 
