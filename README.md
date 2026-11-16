@@ -2,7 +2,7 @@
 
 A planned page where a passenger types a flight code and date and gets a weather and turbulence brief, with a public record of how the forecasts did. The design is [`docs/DESIGN.md`](docs/DESIGN.md); the data-source recon is [`docs/RECON.md`](docs/RECON.md).
 
-So far the repo holds the docs, the core package and brief engine with a command-line brief (Phase 1), and the two early pieces of the forecast layer (Phase 2). The forecast layer is not yet read by the brief, and the page is not started.
+So far the repo holds the docs, the core package and brief engine with a command-line brief (Phase 1), the two early pieces of the forecast layer (Phase 2), and the page (Phase 3) reading saved snapshots. The forecast layer is not yet read by the brief, and the page's live data module is not in yet.
 
 ## The brief (Phase 1)
 
@@ -20,6 +20,21 @@ uv run brief SQ231 2026-11-04 --dep 08:00 --as-of 2026-11-03T23:00 --snapshots t
 - **Wording:** the code never writes a severity word. An official source's own text is carried in `quoted` fields and printed inside quotation marks.
 
 The modules under `src/flight_brief/core/` are copied from `oceanic-flight-watch` (MIT, same author); each file says what changed.
+
+## The page
+
+`brief-web` serves the same brief as a page: server-rendered, standard library only, no JavaScript, and nothing loaded from another host.
+
+```bash
+uv run brief-web --port 8000 --snapshots tests/fixtures/snapshots --as-of 2026-11-03T23:00 --saved data/saved
+# then open http://127.0.0.1:8000/f/SQ231/2026-11-04/1?dep=08:00
+```
+
+- **Addresses:** `/` is the form. It submits to `/go`, which redirects to the flight's own address, `/f/{code}/{date}/{leg}?dep=HH:MM`, one per flight and leg, with the code in capitals and leg 1 unless the number has several legs, in which case `/go` lists them as links. Optional parameters: `arr`, `aircraft`, `from` and `to` (the two airports), `fl`, `gs` and `airline`, each meaning what the command line's option means.
+- **What it shows:** what the text brief shows, in the same order, plus an hour strip (each state as a symbol and a colour) and a route map drawn as inline SVG with no coastlines. A request that gives no brief is a page too: a number with no route shows the form with the two airports, a shared code lists the airlines, a bad value shows its message beside the form.
+- **Data:** with `--snapshots` it reads that store as known at `--as-of`. Without it the page is live and calls `flight_brief.live.fetch` to fill `--cache`; until that module is in, it says live data is not installed.
+- **Saved briefs:** with `--saved`, every brief that renders is written once with its inputs to `<dir>/<code>/<date>/leg<leg>-<issued>-<hash>.json`, where the hash is of what was typed. `/f/{code}/{date}/{leg}/saved/{issued}-{hash}` draws that record again without reading or fetching anything, and says it is a saved brief and when it was issued.
+- **Limits:** every value is checked against a strict pattern before anything else happens; 30 brief pages per address per 10 minutes, kept in memory; brief pages carry `noindex`; a Content-Security-Policy allows the page's one style block and nothing else. `--behind-proxy` takes the address from `X-Forwarded-For`. The server is `wsgiref`, one request at a time.
 
 ## What runs
 
@@ -54,6 +69,7 @@ tile.sample(39.86, -104.67, flight_level=360, forecast_hour=6)   # EDR near Denv
 uv sync
 uv run pytest
 uv run brief SQ231 2026-11-04 --dep 08:00 --as-of 2026-11-03T23:00 --snapshots tests/fixtures/snapshots
+uv run brief-web --port 8000 --snapshots tests/fixtures/snapshots --as-of 2026-11-03T23:00
 uv run python -m flight_brief.jobs.decode_check
 uv run python -m flight_brief.jobs.gtg_tiles --store dir:/tmp/tiles --max-runs 1 --verify
 ```

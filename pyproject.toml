@@ -17,6 +17,7 @@ routes = ["timezonefinder>=6.5"]  # only to build the route table
 
 [project.scripts]
 brief = "flight_brief.cli:main"
+brief-web = "flight_brief.web:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
