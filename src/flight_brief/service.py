@@ -62,7 +62,7 @@ def request_brief(req: BriefRequest, table: RouteTable, root: Path, as_of: datet
     leg: Leg
     if req.origin or req.destination:
         if not (req.origin and req.destination):
-            return Problem(status="invalid", message="Give both airports: --from and --to")
+            return Problem(status="invalid", message="Give both airports: the origin and the destination")
         typed = typed_leg(table, req.origin, req.destination)
         if isinstance(typed, str):
             return Problem(status="invalid", message=typed)
@@ -75,7 +75,7 @@ def request_brief(req: BriefRequest, table: RouteTable, root: Path, as_of: datet
                          for x in found.legs)
         return Problem(status="choose_leg",
                        message=f"{found.code} has {len(found.legs)} legs ({legs}). "
-                               "Say which with --leg",
+                               "Say which leg",
                        legs=[{"index": x.index, "origin": x.origin.code,
                               "destination": x.destination.code} for x in found.legs])
     else:

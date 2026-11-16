@@ -1,6 +1,6 @@
 [project]
 name = "flight-brief"
-version = "0.0.1"
+version = "0.1.0"
 description = "Flight weather brief with a public forecast track record"
 requires-python = ">=3.11"
 dependencies = [
