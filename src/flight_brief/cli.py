@@ -1,21 +1,24 @@
-"""`brief SQ322 2026-11-14 --dep 23:55 --as-of <time> --snapshots <dir>`
+"""`brief SQ322 2026-11-14 --dep 23:55`
 
-Prints the brief for one leg, read offline from a snapshot directory and a local route table.
-`--json` prints the brief record instead of text.
+Prints the brief for one leg from a local route table. Without `--snapshots` the brief is
+live: what it needs is fetched now from NOAA's Aviation Weather Center and kept for 30 minutes
+in the `--cache` directory. With `--snapshots <dir>` it is read offline from that snapshot
+store, as known at `--as-of`. `--json` prints the brief record instead of text.
 """
 
 import argparse
 import json
+import logging
 import os
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .aircraft import lookup
-from .brief import arrival_utc, make_brief, to_utc
+from . import live
+from .forecast.layer import TileSource, default_root
 from .render import render
-from .resolve import Leg, resolve, typed_leg
+from .service import BriefRequest, Problem, request_brief
 from .vrs import RouteTable
 
 
@@ -34,6 +37,11 @@ def _as_of(text: str | None) -> datetime:
     return at.astimezone(UTC) if at.tzinfo else at.replace(tzinfo=UTC)
 
 
+def default_cache() -> Path:
+    return Path(os.environ.get("FLIGHT_BRIEF_CACHE")
+                or Path.home() / ".cache" / "flight-brief" / "live")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="brief", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -44,8 +52,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--arr", help="local arrival time at the destination, HH:MM (or with a "
                                       "UTC offset); sets the groundspeed. Without it the "
                                       "arrival is an estimate")
-    parser.add_argument("--snapshots", type=Path, required=True, help="snapshot store directory")
-    parser.add_argument("--as-of", help="UTC time the brief is issued at; default now")
+    parser.add_argument("--snapshots", type=Path,
+                        help="read offline from this snapshot store instead of fetching")
+    parser.add_argument("--as-of", help="UTC time the brief is issued at, with --snapshots; "
+                                        "default now")
+    parser.add_argument("--cache", type=Path, default=default_cache(),
+                        help="where a live brief keeps what it fetched (default "
+                             "~/.cache/flight-brief/live, or $FLIGHT_BRIEF_CACHE)")
+    parser.add_argument("--tiles", type=Path,
+                        help="folder of forecast tiles (wind-shear index, GTG). A live brief "
+                             "downloads the newest ones there (default "
+                             "~/.cache/flight-brief/tiles, or $FLIGHT_BRIEF_TILES); with "
+                             "--snapshots the folder is read as it is, and without --tiles "
+                             "the forecast lines are left out")
+    parser.add_argument("--no-forecast", action="store_true",
+                        help="leave the wind-shear index and GTG out of a live brief")
     parser.add_argument("--routes", type=Path,
                         default=Path(os.environ.get("FLIGHT_BRIEF_ROUTES", "data/vrs.sqlite")),
                         help="route table built by `python -m flight_brief.vrs`")
@@ -62,51 +83,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="print the brief record")
     args = parser.parse_args(argv)
 
-    try:
-        day = date.fromisoformat(args.date)
-    except ValueError:
-        return _fail(args, "invalid", f"'{args.date}' is not a date. Use YYYY-MM-DD")
+    if args.snapshots is None and args.as_of:
+        return _fail(args, "invalid", "--as-of needs --snapshots: a live brief is always "
+                                      "issued now")
+    if os.environ.get("FLIGHT_BRIEF_DEBUG"):  # one line on stderr per request or cache hit
+        logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(message)s")
     try:
         table = RouteTable(args.routes)
     except FileNotFoundError as exc:
         return _fail(args, "error", str(exc))
-
-    found = resolve(args.code, table, args.airline)
-    if found.status == "invalid":
-        return _fail(args, "invalid", found.message)
-    callsign = found.callsign
-    leg: Leg
-    if args.origin or args.destination:
-        if not (args.origin and args.destination):
-            return _fail(args, "invalid", "Give both airports: --from and --to")
-        typed = typed_leg(table, args.origin, args.destination)
-        if isinstance(typed, str):
-            return _fail(args, "invalid", typed)
-        leg, callsign = typed, None
-    elif found.status != "mapped":
-        return _fail(args, found.status, found.message,
-                     candidates=[c.model_dump() for c in found.candidates])
-    elif len(found.legs) > 1 and args.leg is None:
-        legs = "; ".join(f"leg {x.index}: {x.origin.code} to {x.destination.code}"
-                         for x in found.legs)
-        return _fail(args, "choose_leg", f"{found.code} has {len(found.legs)} legs ({legs}). "
-                                         "Say which with --leg")
+    req = BriefRequest(code=args.code, day=args.date, dep=args.dep, arr=args.arr, leg=args.leg,
+                       airline=args.airline, origin=args.origin, destination=args.destination,
+                       aircraft=args.aircraft, fl=args.fl, gs=args.gs)
+    if args.snapshots is not None:
+        tiles = TileSource(args.tiles) if args.tiles and not args.no_forecast else None
+        brief = request_brief(req, table, args.snapshots, _as_of(args.as_of), tiles=tiles)
     else:
-        index = args.leg or 1
-        if not 1 <= index <= len(found.legs):
-            return _fail(args, "invalid", f"{found.code} has no leg {index}")
-        leg = found.legs[index - 1]
-
-    try:
-        departure = to_utc(day, args.dep, leg.origin.tz)
-        arrival = arrival_utc(departure, args.arr, leg.destination.tz) if args.arr else None
-        assert found.code is not None
-        aircraft = lookup(args.aircraft, table) if args.aircraft else None
-        brief = make_brief(found.code, leg, day, departure, _as_of(args.as_of), args.snapshots,
-                           callsign=callsign, cruise_fl=args.fl, groundspeed_kt=args.gs,
-                           arrival=arrival, aircraft=aircraft)
-    except ValueError as exc:
-        return _fail(args, "invalid", str(exc))
+        try:
+            args.cache.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return _fail(args, "error", f"Cannot use the cache directory {args.cache}: {exc}")
+        tiles = (None if args.no_forecast
+                 else TileSource(args.tiles or default_root(), download=True))
+        brief = request_brief(req, table, args.cache, _as_of(None), fetch=live.fetch,
+                              tiles=tiles)
+    if isinstance(brief, Problem):
+        extra = {"candidates": brief.candidates} if brief.status not in (
+            "invalid", "error", "choose_leg") else {}
+        return _fail(args, brief.status, brief.message, **extra)
     print(json.dumps(brief.record(), indent=2) if args.json else render(brief))
     return 0
 

@@ -11,7 +11,8 @@ Wording rules this module keeps (docs/DESIGN.md):
   says "too early to know" or "none issued this far ahead", never nothing;
 - a feed with no recent snapshot says "last updated ... ago", never an empty list.
 
-Phase 1 has no forecast layer: `shear` and `gtg` are always null here (Phase 2 fills them).
+The forecast layer (the wind-shear index worldwide, GTG over the contiguous US) is read from
+tiles when a `TileSource` is given; without one, `shear` and `gtg` stay null and unlisted.
 """
 
 import math
@@ -32,6 +33,8 @@ from .core.hazards import from_sigmet
 from .core.models import Hazard, PassengerFlight, Waypoint
 from .core.route import TimedPoint, distance_nm, position_at, timeline
 from .core.snapshots import Envelope
+from .forecast import layer
+from .forecast.layer import TileSource
 from .gairmet import HALF_WINDOW, from_gairmet, valid_time
 from .resolve import Leg
 
@@ -41,8 +44,31 @@ GAIRMET_REACH_H = 12.0
 REPORT_REACH_H = 6.0
 TAF_REACH_H = 30.0
 TAF_CHECK_H = 24.0  # a TAF covering a time exists about a day before it
-# Phase 1 has no index and no Tomorrow.io, so the TAF is the longest horizon switched on.
+# The longest horizon of the sources switched on: the TAF without the forecast tiles, the
+# wind-shear index with them.
 TOO_FAR_H = TAF_REACH_H
+
+
+def horizon_h(with_tiles: bool) -> float:
+    return float(layer.SHEAR_REACH_H) if with_tiles else TOO_FAR_H
+
+
+# The wind-shear index (Ellrod TI1 from open GFS winds, units 1e-7 s^-2, highest value within
+# 0.5 degree). The flag and its rates are the recon's measurement at 24 to 27 h lead, FL290 to
+# FL440 (docs/RECON.md). It is an index, not a turbulence forecast: no intensity is named.
+SHEAR_FLAG = 8.0
+SHEAR_RATES = "flags 72% of rough reports and 35% of smooth ones"
+SHEAR_FL = (290, 440)
+SHEAR_STALE = timedelta(hours=18)  # two runs missed
+SHEAR_LICENCE = ("Wind-shear index computed by this project from NOAA GFS winds "
+                 "(US Government work, public domain)")
+# GTG (NOAA's turbulence forecast, contiguous US): eddy dissipation rate, m^2/3 s^-1. NOAA's
+# intensity names depend on the aircraft, so none is used here. The flag is this project's
+# own number and its hit rate has not been measured yet.
+GTG_FLAG = 0.22
+GTG_FL = (285, 435)  # the tiles hold FL300 to FL420
+GTG_STALE = timedelta(hours=9)
+GTG_LICENCE = "NOAA Graphical Turbulence Guidance (GTG), US Government work (public domain)"
 
 # How old a snapshot may be before its feed counts as stale. These follow the snapshot
 # store's cadence; the page's on-request caches will use 30 minutes.
@@ -148,8 +174,8 @@ class Hour(Out):
     end: datetime = Field(serialization_alias="to")
     state: HourState
     agreement: Literal["agree", "disagree", "single"] | None
-    shear: dict[str, Any] | None = None  # Phase 2
-    gtg: dict[str, Any] | None = None  # Phase 2
+    shear: dict[str, Any] | None = None  # {model, run, layer, value, threshold, flagged}
+    gtg: dict[str, Any] | None = None  # {run, edr, level, threshold, flagged, category}
     warnings: list[WarningHit] = []
     expired_warnings: list[ExpiredHit] = []
     gairmets: list[WarningHit] = []
@@ -444,6 +470,126 @@ LABELS = {"sigmet": "Official warnings", "gairmet": "G-AIRMETs", "pirep": "Pilot
           "taf": "TAF", "metar": "METAR"}
 
 
+# --- the forecast layer --------------------------------------------------------------------
+
+class _Shear:
+    """The wind-shear index for the hours of one brief."""
+
+    def __init__(self, tiles: TileSource, as_of: datetime, cruise_fl: int):
+        self.cruise_fl = cruise_fl
+        self.found = tiles.shear(as_of) if SHEAR_FL[0] <= cruise_fl <= SHEAR_FL[1] else None
+        self.age = as_of - self.found[1] if self.found else None
+        self.newest = layer.runs_before(as_of, layer.SHEAR_LAG, 1)[0]  # the run posted by now
+
+    def provenance(self, as_of: datetime) -> Provenance | None:
+        if not SHEAR_FL[0] <= self.cruise_fl <= SHEAR_FL[1]:
+            return None
+        if self.found is None:
+            return Provenance(source="wind-shear index", fetched_at=None, issued_at=None,
+                              url_without_secrets=None, licence=SHEAR_LICENCE, stale=True,
+                              note=f"no wind-shear index tile at {day_hhmm(as_of)}: "
+                                   "nothing listed is NOT an all clear")
+        _, run, url = self.found
+        assert self.age is not None
+        late = self.age > SHEAR_STALE
+        return Provenance(source="wind-shear index", fetched_at=None, issued_at=run,
+                          url_without_secrets=url, licence=SHEAR_LICENCE, stale=late,
+                          note=f"Wind-shear index last updated {age(self.age)} ago" if late
+                          else None)
+
+    def hour(self, seg: list[TimedPoint], end: datetime
+             ) -> tuple[SourceLine, dict[str, Any] | None]:
+        if not SHEAR_FL[0] <= self.cruise_fl <= SHEAR_FL[1]:
+            return SourceLine(state="not_covered", text=(
+                f"Not covered here: the index is measured for FL{SHEAR_FL[0]} to "
+                f"FL{SHEAR_FL[1]} only")), None
+        if self.found is None:
+            return SourceLine(state="stale", text="Wind-shear index: no tile available"), None
+        tile, run, _ = self.found
+        if end > run + timedelta(hours=layer.SHEAR_REACH_H):
+            if end <= self.newest + timedelta(hours=layer.SHEAR_REACH_H):
+                # a run that reaches this hour is posted, but its tile is not here
+                assert self.age is not None
+                return SourceLine(state="stale", text=(
+                    f"Wind-shear index last updated {age(self.age)} ago")), None
+            return _too_early(end - timedelta(hours=layer.SHEAR_REACH_H) + layer.SHEAR_LAG), None
+        got = [x for x in (tile.sample(p.lat, p.lon, self.cruise_fl, p.t) for p in seg) if x]
+        if not got:
+            return SourceLine(state="not_covered",
+                              text="Not covered here: no index value on this stretch"), None
+        value, layer_fl, _ = max(got)
+        flagged = value >= SHEAR_FLAG
+        record = {"model": "GFS 0.25 degree", "run": run.isoformat(), "layer": layer_fl,
+                  "value": round(value, 1), "threshold": SHEAR_FLAG, "flagged": flagged}
+        if flagged:
+            return SourceLine(state="flagged", text=(
+                f"Elevated wind shear: index {value:.0f}, flag at {SHEAR_FLAG:.0f} "
+                f"({SHEAR_RATES})")), record
+        return SourceLine(state="nothing_found", text=(
+            f"Nothing found: index below the flag at {SHEAR_FLAG:.0f}")), record
+
+
+class _Gtg:
+    """NOAA's GTG turbulence forecast for the hours of one brief that lie over the US."""
+
+    def __init__(self, tiles: TileSource, as_of: datetime, cruise_fl: int):
+        self.cruise_fl = cruise_fl
+        self.level_ok = GTG_FL[0] <= cruise_fl <= GTG_FL[1]
+        self.found = tiles.gtg(as_of) if self.level_ok else None
+        self.age = as_of - self.found[1] if self.found else None
+        self.newest = layer.runs_before(as_of, layer.GTG_LAG, 1)[0]  # the run posted by now
+
+    def provenance(self, as_of: datetime) -> Provenance | None:
+        if not self.level_ok:
+            return None
+        if self.found is None:
+            return Provenance(source="gtg", fetched_at=None, issued_at=None,
+                              url_without_secrets=None, licence=GTG_LICENCE, stale=True,
+                              note="GTG line left out: no GTG tile at " + day_hhmm(as_of))
+        _, run, url = self.found
+        assert self.age is not None
+        late = self.age > GTG_STALE
+        return Provenance(source="gtg", fetched_at=None, issued_at=run, url_without_secrets=url,
+                          licence=GTG_LICENCE, stale=late,
+                          note=f"GTG last updated {age(self.age)} ago" if late else None)
+
+    def hour(self, seg: list[TimedPoint], end: datetime
+             ) -> tuple[SourceLine | None, dict[str, Any] | None]:
+        if not self.level_ok:
+            return SourceLine(state="not_covered", text=(
+                "Not covered at this cruise level: the saved GTG levels are FL300 to FL420")), None
+        if self.found is None:
+            return None, None  # the line is left out, with a note
+        tile, run, _ = self.found
+        if end > run + timedelta(hours=layer.GTG_REACH_H):
+            if end <= self.newest + timedelta(hours=layer.GTG_REACH_H):
+                assert self.age is not None
+                return SourceLine(state="stale",
+                                  text=f"GTG last updated {age(self.age)} ago"), None
+            return _too_early(end - timedelta(hours=layer.GTG_REACH_H) + layer.GTG_LAG), None
+        level = min(tile.flight_levels, key=lambda fl: abs(fl - self.cruise_fl))
+        values = []
+        for p in seg:
+            hour = round((p.t - run) / timedelta(hours=1))
+            if hour in tile.forecast_hours:
+                v = tile.sample(p.lat, (p.lon + 180) % 360 - 180, level, hour)
+                if not math.isnan(v):
+                    values.append(v)
+        if not values:
+            return SourceLine(state="not_covered",
+                              text="Not covered here: outside the GTG grid"), None
+        edr = max(values)
+        flagged = edr >= GTG_FLAG
+        record = {"run": run.isoformat(), "edr": round(edr, 3), "level": level,
+                  "threshold": GTG_FLAG, "flagged": flagged, "category": None}
+        if flagged:
+            return SourceLine(state="flagged", text=(
+                f"GTG eddy dissipation rate {edr:.2f} at FL{level}, flag at {GTG_FLAG:.2f} "
+                "(this project's flag; its hit rate is not measured yet)")), record
+        return SourceLine(state="nothing_found", text=(
+            f"Nothing found: GTG below the flag at {GTG_FLAG:.2f}")), record
+
+
 def _last_update(root: Path, source: str, as_of: datetime) -> str:
     """The stale wording: when the feed was last seen, however long ago."""
     env = snapshots.latest(root, source, as_of, max_age=timedelta(days=30),
@@ -579,23 +725,25 @@ def _summary(hours: list[Hour]) -> str:
     spans = ", ".join(f"hour {a}" if a == b else f"hours {a} to {b}" for a, b in runs)
     head = (f"{len(runs)} flagged stretch{'es' if len(runs) != 1 else ''}"
             + (f" ({spans})" if runs else ""))
-    names = {"warnings": "Official warnings", "gairmet": "G-AIRMETs",
-             "reports": "Pilot reports"}
+    names = {"shear": "Wind-shear index", "gtg": "GTG", "warnings": "Official warnings",
+             "gairmet": "G-AIRMETs", "reports": "Pilot reports"}
     parts = []
     for key, name in names.items():
         listed = [h for h in hours if key in h.sources]
         if listed:
             n = sum(h.sources[key].state in SPEAKS for h in listed)
-            parts.append(f"{name} speak for {n} of {len(hours)} hours")
+            verb = "speaks" if key in ("shear", "gtg") else "speak"
+            parts.append(f"{name} {verb} for {n} of {len(hours)} hours")
     return f"{head}. {'. '.join(parts)}."
 
 
 def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datetime,
                root: Path, callsign: str | None = None, cruise_fl: int | None = None,
                groundspeed_kt: float | None = None, arrival: datetime | None = None,
-               aircraft: Aircraft | None = None) -> Brief:
+               aircraft: Aircraft | None = None, tiles: TileSource | None = None) -> Brief:
     """The brief for one leg as known at `as_of`, read from the snapshot store at `root`.
-    `departure` and the optional `arrival` are the gate times the user typed."""
+    `departure` and the optional `arrival` are the gate times the user typed. With `tiles`,
+    the wind-shear index and GTG are read too, and the brief reaches as far as the index."""
     flight = make_flight(code, leg, departure, cruise_fl, groundspeed_kt, arrival, aircraft)
     points = timeline(flight)
     typed = arrival is not None
@@ -621,10 +769,11 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
             "flight": block, "route": route, "notes": [TRACKER, NOT_OPS]}
     if departure <= as_of:
         return Brief(status="departed", message=DEPARTED, **base)
-    if departure - as_of > timedelta(hours=TOO_FAR_H):
+    limit = horizon_h(tiles is not None)
+    if departure - as_of > timedelta(hours=limit):
         return Brief(status="too_far_out", **base,
-                     message=f"Too far out. Come back within {TOO_FAR_H:.0f} hours of departure, "
-                             f"after {day_hhmm(departure - timedelta(hours=TOO_FAR_H))}")
+                     message=f"Too far out. Come back within {limit:.0f} hours of departure, "
+                             f"after {day_hhmm(departure - timedelta(hours=limit))}")
 
     lookahead = (arrival - as_of).total_seconds() / 3600 + 1
     cruise_ft = flight.cruise_fl * 100
@@ -653,8 +802,14 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
     gair_hits = encounters(flight, gairmets, as_of, lookahead)
 
     rep_envs, reports = read_reports(root, as_of)
-    provenance += ([_provenance(e, "pirep", as_of) for e in rep_envs]
-                   or [_provenance(None, "pirep", as_of)])
+    provenance += [_provenance(e, "pirep", as_of) for e in rep_envs]
+
+    shear = _Shear(tiles, as_of, flight.cruise_fl) if tiles is not None else None
+    gtg = _Gtg(tiles, as_of, flight.cruise_fl) if tiles is not None and any(over_us) else None
+    provenance += [p for p in (shear.provenance(as_of) if shear else None,
+                               gtg.provenance(as_of) if gtg else None) if p is not None]
+    if tiles is not None and tiles.errors:
+        notes.append("A forecast tile could not be fetched: " + "; ".join(tiles.errors[:2]))
 
     hours: list[Hour] = []
     for i, us in enumerate(over_us):
@@ -663,6 +818,14 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
         seg = _segment(points, start, end)
         lead = (start - as_of).total_seconds() / 3600
         sources: dict[str, SourceLine] = {}
+        shear_rec: dict[str, Any] | None = None
+        gtg_rec: dict[str, Any] | None = None
+        if shear is not None:
+            sources["shear"], shear_rec = shear.hour(seg, end)
+        if gtg is not None and us:
+            gtg_line, gtg_rec = gtg.hour(seg, end)
+            if gtg_line is not None:
+                sources["gtg"] = gtg_line
 
         hits = [_hit(by_id[e.hazard_id], e.entry, e.exit) for e in sig_hits
                 if e.entry < end and e.exit >= start]
@@ -711,6 +874,8 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
         elif lead > REPORT_REACH_H:
             sources["reports"] = _too_early(start - timedelta(hours=REPORT_REACH_H))
         elif not rep_envs:
+            if not any(p.source == "pirep" for p in provenance):
+                provenance.append(_provenance(None, "pirep", as_of))
             sources["reports"] = SourceLine(state="stale",
                                             text=_last_update(root, "pirep", as_of))
         else:
@@ -741,7 +906,7 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
             None if not speaking else "single" if len(speaking) == 1
             else "agree" if len(set(speaking)) == 1 else "disagree")
         hours.append(Hour(index=i + 1, start=start, end=end, state=state, agreement=agreement,
-                          warnings=hits, expired_warnings=late, gairmets=g_hits, reports=near,
+                          shear=shear_rec, gtg=gtg_rec, warnings=hits, expired_warnings=late, gairmets=g_hits, reports=near,
                           sources=sources))
 
     names = {"origin": (leg.origin.code, "climb"), "destination": (leg.destination.code, "descent")}

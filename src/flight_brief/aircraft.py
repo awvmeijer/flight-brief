@@ -58,7 +58,7 @@ def lookup(text: str, table: RouteTable) -> Aircraft:
     engine, species = found
     if species != "L" or engine not in ENGINE:
         raise ValueError(f"'{code}' is not an aeroplane this brief has a default speed for. "
-                         f"{HELP}, or give the speed with --gs")
+                         f"{HELP}, or give the groundspeed instead")
     kind = ENGINE[engine]
     own = BY_TYPE.get(code) or BY_KIND[kind]
     return Aircraft(code=code, kind=kind, groundspeed_kt=own[0] if own else None,
