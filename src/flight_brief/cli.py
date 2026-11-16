@@ -1,17 +1,21 @@
-"""`brief SQ322 2026-11-14 --dep 23:55 --as-of <time> --snapshots <dir>`
+"""`brief SQ322 2026-11-14 --dep 23:55`
 
-Prints the brief for one leg, read offline from a snapshot directory and a local route table.
-`--json` prints the brief record instead of text.
+Prints the brief for one leg from a local route table. Without `--snapshots` the brief is
+live: what it needs is fetched now from NOAA's Aviation Weather Center and kept for 30 minutes
+in the `--cache` directory. With `--snapshots <dir>` it is read offline from that snapshot
+store, as known at `--as-of`. `--json` prints the brief record instead of text.
 """
 
 import argparse
 import json
+import logging
 import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import live
 from .render import render
 from .service import BriefRequest, Problem, request_brief
 from .vrs import RouteTable
@@ -32,6 +36,11 @@ def _as_of(text: str | None) -> datetime:
     return at.astimezone(UTC) if at.tzinfo else at.replace(tzinfo=UTC)
 
 
+def default_cache() -> Path:
+    return Path(os.environ.get("FLIGHT_BRIEF_CACHE")
+                or Path.home() / ".cache" / "flight-brief" / "live")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="brief", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -42,8 +51,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--arr", help="local arrival time at the destination, HH:MM (or with a "
                                       "UTC offset); sets the groundspeed. Without it the "
                                       "arrival is an estimate")
-    parser.add_argument("--snapshots", type=Path, required=True, help="snapshot store directory")
-    parser.add_argument("--as-of", help="UTC time the brief is issued at; default now")
+    parser.add_argument("--snapshots", type=Path,
+                        help="read offline from this snapshot store instead of fetching")
+    parser.add_argument("--as-of", help="UTC time the brief is issued at, with --snapshots; "
+                                        "default now")
+    parser.add_argument("--cache", type=Path, default=default_cache(),
+                        help="where a live brief keeps what it fetched (default "
+                             "~/.cache/flight-brief/live, or $FLIGHT_BRIEF_CACHE)")
     parser.add_argument("--routes", type=Path,
                         default=Path(os.environ.get("FLIGHT_BRIEF_ROUTES", "data/vrs.sqlite")),
                         help="route table built by `python -m flight_brief.vrs`")
@@ -60,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="print the brief record")
     args = parser.parse_args(argv)
 
+    if args.snapshots is None and args.as_of:
+        return _fail(args, "invalid", "--as-of needs --snapshots: a live brief is always "
+                                      "issued now")
+    if os.environ.get("FLIGHT_BRIEF_DEBUG"):  # one line on stderr per request or cache hit
+        logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(message)s")
     try:
         table = RouteTable(args.routes)
     except FileNotFoundError as exc:
@@ -67,7 +86,14 @@ def main(argv: list[str] | None = None) -> int:
     req = BriefRequest(code=args.code, day=args.date, dep=args.dep, arr=args.arr, leg=args.leg,
                        airline=args.airline, origin=args.origin, destination=args.destination,
                        aircraft=args.aircraft, fl=args.fl, gs=args.gs)
-    brief = request_brief(req, table, args.snapshots, _as_of(args.as_of))
+    if args.snapshots is not None:
+        brief = request_brief(req, table, args.snapshots, _as_of(args.as_of))
+    else:
+        try:
+            args.cache.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return _fail(args, "error", f"Cannot use the cache directory {args.cache}: {exc}")
+        brief = request_brief(req, table, args.cache, _as_of(None), fetch=live.fetch)
     if isinstance(brief, Problem):
         extra = {"candidates": brief.candidates} if brief.status not in (
             "invalid", "error", "choose_leg") else {}
