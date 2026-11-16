@@ -8,14 +8,12 @@ import argparse
 import json
 import os
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .aircraft import lookup
-from .brief import arrival_utc, make_brief, to_utc
 from .render import render
-from .resolve import Leg, resolve, typed_leg
+from .service import BriefRequest, Problem, request_brief
 from .vrs import RouteTable
 
 
@@ -63,50 +61,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        day = date.fromisoformat(args.date)
-    except ValueError:
-        return _fail(args, "invalid", f"'{args.date}' is not a date. Use YYYY-MM-DD")
-    try:
         table = RouteTable(args.routes)
     except FileNotFoundError as exc:
         return _fail(args, "error", str(exc))
-
-    found = resolve(args.code, table, args.airline)
-    if found.status == "invalid":
-        return _fail(args, "invalid", found.message)
-    callsign = found.callsign
-    leg: Leg
-    if args.origin or args.destination:
-        if not (args.origin and args.destination):
-            return _fail(args, "invalid", "Give both airports: --from and --to")
-        typed = typed_leg(table, args.origin, args.destination)
-        if isinstance(typed, str):
-            return _fail(args, "invalid", typed)
-        leg, callsign = typed, None
-    elif found.status != "mapped":
-        return _fail(args, found.status, found.message,
-                     candidates=[c.model_dump() for c in found.candidates])
-    elif len(found.legs) > 1 and args.leg is None:
-        legs = "; ".join(f"leg {x.index}: {x.origin.code} to {x.destination.code}"
-                         for x in found.legs)
-        return _fail(args, "choose_leg", f"{found.code} has {len(found.legs)} legs ({legs}). "
-                                         "Say which with --leg")
-    else:
-        index = args.leg or 1
-        if not 1 <= index <= len(found.legs):
-            return _fail(args, "invalid", f"{found.code} has no leg {index}")
-        leg = found.legs[index - 1]
-
-    try:
-        departure = to_utc(day, args.dep, leg.origin.tz)
-        arrival = arrival_utc(departure, args.arr, leg.destination.tz) if args.arr else None
-        assert found.code is not None
-        aircraft = lookup(args.aircraft, table) if args.aircraft else None
-        brief = make_brief(found.code, leg, day, departure, _as_of(args.as_of), args.snapshots,
-                           callsign=callsign, cruise_fl=args.fl, groundspeed_kt=args.gs,
-                           arrival=arrival, aircraft=aircraft)
-    except ValueError as exc:
-        return _fail(args, "invalid", str(exc))
+    req = BriefRequest(code=args.code, day=args.date, dep=args.dep, arr=args.arr, leg=args.leg,
+                       airline=args.airline, origin=args.origin, destination=args.destination,
+                       aircraft=args.aircraft, fl=args.fl, gs=args.gs)
+    brief = request_brief(req, table, args.snapshots, _as_of(args.as_of))
+    if isinstance(brief, Problem):
+        extra = {"candidates": brief.candidates} if brief.status not in (
+            "invalid", "error", "choose_leg") else {}
+        return _fail(args, brief.status, brief.message, **extra)
     print(json.dumps(brief.record(), indent=2) if args.json else render(brief))
     return 0
 
