@@ -12,7 +12,8 @@ from .brief import TOO_EARLY, Brief, Hour, SourceLine, age, day_hhmm, hhmm, leve
 SYMBOL = {"flagged": "#", "nothing_found": ".", "too_early": "?", "not_covered": "-",
           "stale": "!"}
 LEGEND = "# flagged  . nothing found  ? too early  - not covered  ! source stale"
-SOURCES = (("warnings", "Official warnings"), ("gairmet", "G-AIRMETs"),
+SOURCES = (("shear", "Wind-shear index"), ("gtg", "GTG forecast"),
+           ("warnings", "Official warnings"), ("gairmet", "G-AIRMETs"),
            ("reports", "Pilot reports"))
 
 

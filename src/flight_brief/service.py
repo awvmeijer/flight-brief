@@ -15,6 +15,7 @@ from . import brief as engine
 from .aircraft import lookup
 from .brief import Brief, arrival_utc, make_brief, make_flight, to_utc
 from .core.models import PassengerFlight
+from .forecast.layer import TileSource
 from .resolve import Leg, resolve, typed_leg
 from .vrs import RouteTable
 
@@ -47,7 +48,8 @@ class Problem(BaseModel):
 
 
 def request_brief(req: BriefRequest, table: RouteTable, root: Path, as_of: datetime,
-                  fetch: Fetch | None = None) -> Brief | Problem:
+                  fetch: Fetch | None = None, tiles: TileSource | None = None
+                  ) -> Brief | Problem:
     try:
         day = date.fromisoformat(req.day)
     except ValueError:
@@ -88,11 +90,11 @@ def request_brief(req: BriefRequest, table: RouteTable, root: Path, as_of: datet
         assert found.code is not None
         aircraft = lookup(req.aircraft, table) if req.aircraft else None
         if fetch is not None and timedelta(0) < departure - as_of <= timedelta(
-                hours=engine.TOO_FAR_H):
+                hours=engine.horizon_h(tiles is not None)):
             flight = make_flight(found.code, leg, departure, req.fl, req.gs, arrival, aircraft)
             fetch(root, leg, flight, as_of)
         return make_brief(found.code, leg, day, departure, as_of, root, callsign=callsign,
                           cruise_fl=req.fl, groundspeed_kt=req.gs, arrival=arrival,
-                          aircraft=aircraft)
+                          aircraft=aircraft, tiles=tiles)
     except ValueError as exc:
         return Problem(status="invalid", message=str(exc))
