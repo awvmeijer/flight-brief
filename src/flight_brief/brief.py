@@ -790,8 +790,7 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
     gair_hits = encounters(flight, gairmets, as_of, lookahead)
 
     rep_envs, reports = read_reports(root, as_of)
-    provenance += ([_provenance(e, "pirep", as_of) for e in rep_envs]
-                   or [_provenance(None, "pirep", as_of)])
+    provenance += [_provenance(e, "pirep", as_of) for e in rep_envs]
 
     shear = _Shear(tiles, as_of, flight.cruise_fl) if tiles is not None else None
     gtg = _Gtg(tiles, as_of, flight.cruise_fl) if tiles is not None and any(over_us) else None
@@ -863,6 +862,8 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
         elif lead > REPORT_REACH_H:
             sources["reports"] = _too_early(start - timedelta(hours=REPORT_REACH_H))
         elif not rep_envs:
+            if not any(p.source == "pirep" for p in provenance):
+                provenance.append(_provenance(None, "pirep", as_of))
             sources["reports"] = SourceLine(state="stale",
                                             text=_last_update(root, "pirep", as_of))
         else:

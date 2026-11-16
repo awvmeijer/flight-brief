@@ -32,6 +32,12 @@ SHEAR_LOOK_BACK = 5                  # runs, about 30 h
 Get = Callable[[str], bytes | None]
 
 
+def default_root() -> Path:
+    import os
+    return Path(os.environ.get("FLIGHT_BRIEF_TILES")
+                or Path.home() / ".cache" / "flight-brief" / "tiles")
+
+
 def http_get(url: str, timeout: float = 60.0) -> bytes | None:
     """The file, or None when it does not exist. Other failures raise."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})  # noqa: S310
@@ -53,11 +59,11 @@ def runs_before(at: dt.datetime, lag: dt.timedelta, count: int) -> list[dt.datet
 
 class TileSource:
     def __init__(self, root: Path, download: bool = False, base_url: str = RELEASES,
-                 get: Get = http_get):
+                 get: Get | None = None):
         self.root = Path(root)
         self.download = download
         self.base_url = base_url
-        self._get = get
+        self._get = get or http_get
         self._decoded: dict[str, object] = {}
         self.errors: list[str] = []  # what could not be fetched, for the brief's notes
 

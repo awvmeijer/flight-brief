@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import live
+from .forecast.layer import TileSource, default_root
 from .render import render
 from .service import BriefRequest, Problem, request_brief
 from .vrs import RouteTable
@@ -58,6 +59,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cache", type=Path, default=default_cache(),
                         help="where a live brief keeps what it fetched (default "
                              "~/.cache/flight-brief/live, or $FLIGHT_BRIEF_CACHE)")
+    parser.add_argument("--tiles", type=Path,
+                        help="folder of forecast tiles (wind-shear index, GTG). A live brief "
+                             "downloads the newest ones there (default "
+                             "~/.cache/flight-brief/tiles, or $FLIGHT_BRIEF_TILES); with "
+                             "--snapshots the folder is read as it is, and without --tiles "
+                             "the forecast lines are left out")
+    parser.add_argument("--no-forecast", action="store_true",
+                        help="leave the wind-shear index and GTG out of a live brief")
     parser.add_argument("--routes", type=Path,
                         default=Path(os.environ.get("FLIGHT_BRIEF_ROUTES", "data/vrs.sqlite")),
                         help="route table built by `python -m flight_brief.vrs`")
@@ -87,13 +96,17 @@ def main(argv: list[str] | None = None) -> int:
                        airline=args.airline, origin=args.origin, destination=args.destination,
                        aircraft=args.aircraft, fl=args.fl, gs=args.gs)
     if args.snapshots is not None:
-        brief = request_brief(req, table, args.snapshots, _as_of(args.as_of))
+        tiles = TileSource(args.tiles) if args.tiles and not args.no_forecast else None
+        brief = request_brief(req, table, args.snapshots, _as_of(args.as_of), tiles=tiles)
     else:
         try:
             args.cache.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             return _fail(args, "error", f"Cannot use the cache directory {args.cache}: {exc}")
-        brief = request_brief(req, table, args.cache, _as_of(None), fetch=live.fetch)
+        tiles = (None if args.no_forecast
+                 else TileSource(args.tiles or default_root(), download=True))
+        brief = request_brief(req, table, args.cache, _as_of(None), fetch=live.fetch,
+                              tiles=tiles)
     if isinstance(brief, Problem):
         extra = {"candidates": brief.candidates} if brief.status not in (
             "invalid", "error", "choose_leg") else {}
