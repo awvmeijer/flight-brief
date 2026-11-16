@@ -215,8 +215,8 @@ def test_a_source_the_page_has_not_heard_of_gets_a_line_of_its_own(table: vrs.Ro
         h.shear = {"value": 3.0, "threshold": 8.0}
     b.hours[1].sources["gtg"] = SourceLine(state="flagged", text='GTG says "MOD"')
     seen = text_of(page.render_page(b))
-    assert f"Shear hours 1 to {len(b.hours)}: Nothing found: index 3" in seen
-    assert 'Gtg hour 2: GTG says "MOD"' in seen
+    assert f"Wind-shear index hours 1 to {len(b.hours)}: Nothing found: index 3" in seen
+    assert 'GTG forecast hour 2: GTG says "MOD"' in seen
     assert "threshold" not in seen  # the dicts are shown only through the source line
 
 
@@ -351,7 +351,7 @@ def test_a_valid_request_is_passed_on_once_with_what_was_typed(
     monkeypatch.setattr(web, "request_brief", spy)
     get(make(table), "/f/VT956/2026-11-17/2?dep=06:30+10:00&arr=11:15&aircraft=at-72&from=ppt"
                      "&to=gmr&fl=240&gs=275.5&airline=vta&other=ignored")
-    (req, _, root, as_of, fetch), = calls
+    (req, _, root, as_of, fetch, _tiles), = calls
     assert req == BriefRequest(code="VT956", day="2026-11-17", dep="06:30+10:00", arr="11:15",
                                leg=2, airline="VTA", origin="PPT", destination="GMR",
                                aircraft="at-72", fl=240, gs=275.5)
@@ -516,7 +516,7 @@ def test_without_snapshots_the_live_fetch_fills_the_cache(
                         lambda *a: calls.append(a) or Problem(status="invalid", message="stop"))
     app = make(table, snapshots=None, cache=tmp_path)
     get(app, SQ231_URL)
-    assert calls[0][2:] == (tmp_path, utc("2026-11-03T23:00"), fetch)
+    assert calls[0][2:] == (tmp_path, utc("2026-11-03T23:00"), fetch, None)
     # a source that fails gives a page, not a stack trace
     monkeypatch.setattr(web, "request_brief", request_brief)
     status, _, body = get(app, SQ231_URL)
