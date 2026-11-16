@@ -1,0 +1,49 @@
+# Saves the wind-shear index (Ellrod TI1, computed from open GFS winds) as
+# compact worldwide tiles, one release asset per GFS run. It is a wind-shear
+# index, not a turbulence forecast. See docs/DESIGN.md, Phase 2.
+#
+# Scheduled workflows run from the default branch only, and GitHub disables
+# them after 60 days without a commit; re-enable from the Actions tab.
+name: shear-tiles
+
+on:
+  schedule:
+    # GFS posts forecast hour 54 about 3.7 to 4 h after run time. Each start
+    # saves every 00/06/12/18Z run of the last two days still missing, so a
+    # late start loses nothing.
+    - cron: "37 4,10,16,22 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/flight_brief/forecast/**"
+      - "src/flight_brief/jobs/shear_tiles.py"
+      - ".github/workflows/shear-tiles.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shear-tiles-${{ github.event_name == 'pull_request' && github.ref || 'store' }}
+  cancel-in-progress: false
+
+jobs:
+  save:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write   # release assets
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Rehearsal on a pull request (one run, three forecast hours, nothing published)
+        if: github.event_name == 'pull_request'
+        run: uv run python -u -m flight_brief.jobs.shear_tiles --store "dir:$RUNNER_TEMP/tiles" --max-runs 1 --hours 6,30,54 --verify
+      - name: Save tiles and read the newest one back
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run python -u -m flight_brief.jobs.shear_tiles --store releases --verify

@@ -2,7 +2,7 @@
 
 A planned page where a passenger types a flight code and date and gets a weather and turbulence brief, with a public record of how the forecasts did. The design is [`docs/DESIGN.md`](docs/DESIGN.md); the data-source recon is [`docs/RECON.md`](docs/RECON.md).
 
-So far the repo holds the docs, the core package and brief engine with a command-line brief (Phase 1), and the two early pieces of the forecast layer (Phase 2). The forecast layer is not yet read by the brief, and the page is not started.
+So far the repo holds the docs, the core package and brief engine with a command-line brief (Phase 1), and three early pieces of the forecast layer (Phase 2). The forecast layer is not yet read by the brief, and the page is not started.
 
 ## The brief (Phase 1)
 
@@ -27,6 +27,7 @@ The modules under `src/flight_brief/core/` are copied from `oceanic-flight-watch
 |---|---|---|
 | `decode-check` | pull requests, manual | Unit tests, then a live check on a Linux runner: fetches GFS 0.25 degree and GTG messages by byte range, decodes them with eccodes, computes the Ellrod TI1 index, prints timing and peak memory |
 | `gtg-tiles` | 01:47, 07:47, 13:47, 19:47 UTC | Saves NOAA's GTG turbulence forecast for the contiguous US as compact tiles, then reads the newest one back and compares it with a direct decode at six points |
+| `shear-tiles` | 04:37, 10:37, 16:37, 22:37 UTC | Computes the Ellrod TI1 wind-shear index from each GFS run, worldwide, and saves the highest value within 0.5 degree of every grid point as one compact tile, then reads the newest one back and compares it with a direct computation at six points |
 
 ## GTG tiles
 
@@ -48,6 +49,31 @@ tile = Tile.from_bytes(open("gtg_conus_edr_12km_20261114T12Z.npz", "rb").read())
 tile.sample(39.86, -104.67, flight_level=360, forecast_hour=6)   # EDR near Denver
 ```
 
+## Wind-shear index tiles
+
+Worldwide, the page will show a wind-shear index computed from open GFS winds. It is an index of wind shear, not a turbulence forecast, and it carries no severity: the brief only says whether it is at or above a threshold, with the rates the recon measured for that threshold.
+
+- **Which runs:** GFS 00, 06, 12 and 18 UTC from NOAA's public AWS bucket, forecast hours 6 to 54 every 3 h (17 hours). A run is taken once its hour-54 index is posted, about 4 h after run time. Each start saves every run of the last two days that the store lacks, oldest first.
+- **What is kept:** Ellrod TI1 (vertical wind shear times deformation) in units of 1e-7 s^-2, for three layers: 300-250 hPa (about FL320), 250-200 hPa (FL363) and 200-150 hPa (FL415), on the 0.25 degree grid, in 8-bit steps of 0.5. Values are rounded down, so the thresholds 8 and 12 compare exactly as the unrounded values would. Values of 127 and above are stored as 127. There is no value poleward of 85 degrees.
+- **Within 0.5 degree:** each grid point holds the highest value among the 5 x 5 grid points centred on it: two points (0.5 degree) either side in latitude and in longitude, both ends included, wrapping in longitude. A reader takes one value at the grid point nearest its position. This is the neighbourhood of the recon's measurement ([`docs/recon/fallback_skill.py`](docs/recon/fallback_skill.py)), so its rates carry over. It is a square, and because a position goes to its nearest grid point first, the reach from the position itself is 0.5 degree give or take 0.125.
+- **What is not kept:** the winds themselves, the value at the grid point alone, other levels, and forecast hours past 54.
+- **Where:** assets of the release `shear-tiles-YYYY-MM` in this repository, one file per run, about 11 MB each (about 1.3 GB a month). Long-term storage is still open in the design.
+- **Format:** a numpy `.npz`, described in [`src/flight_brief/forecast/shear_tiles.py`](src/flight_brief/forecast/shear_tiles.py).
+- **Heartbeat:** `shear-tiles.json` in the release `heartbeats`, written as for the GTG job.
+
+Reading one:
+
+```python
+import datetime as dt
+from flight_brief.forecast.shear_tiles import ShearTile
+
+tile = ShearTile.from_bytes(open("gfs_global_ti1_0p25_20261114T12Z.npz", "rb").read())
+when = dt.datetime(2026, 11, 15, 9, 20, tzinfo=dt.timezone.utc)
+tile.sample(51.47, -0.46, flight_level=370, valid_time=when)   # (value, layer flight level, forecast hour) or None
+```
+
+`sample` uses the layer whose flight level is nearest and the forecast hour nearest the time, and returns `None` when no forecast hour is within 1.5 h, when the latitude is poleward of 85 degrees, or when the cell has no data.
+
 ## Working commands
 
 ```bash
@@ -56,6 +82,7 @@ uv run pytest
 uv run brief SQ231 2026-11-04 --dep 08:00 --as-of 2026-11-03T23:00 --snapshots tests/fixtures/snapshots
 uv run python -m flight_brief.jobs.decode_check
 uv run python -m flight_brief.jobs.gtg_tiles --store dir:/tmp/tiles --max-runs 1 --verify
+uv run python -m flight_brief.jobs.shear_tiles --store dir:/tmp/tiles --max-runs 1 --hours 6,30,54 --verify
 ```
 
 Sources are keyless NOAA services only: GFS from the public AWS bucket, GTG from NOMADS, with a pause after every NOMADS request.
