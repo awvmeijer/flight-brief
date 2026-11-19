@@ -202,7 +202,7 @@ def test_the_entry_point_gives_the_same_app(table: vrs.RouteTable, tmp_path: Pat
     assert get(index.app, "/nope")[0].startswith("404")
     assert get(index.app, "/")[0].startswith("200") and hosted._app is not None
     settings = json.loads((Path(__file__).parent.parent / "vercel.json").read_text())
-    assert settings["rewrites"] == [{"source": "/(.*)", "destination": "/api/index"}]
+    assert settings["rewrites"] == [{"source": "/(.*)", "destination": "/api/index?__path=/$1"}]
     assert "api/index.py" in settings["functions"]
 
 
@@ -218,3 +218,23 @@ def test_a_brief_is_saved_to_the_store_and_opens_again_from_it(table: vrs.RouteT
     assert [c for c in blob.calls if c[0] == "put"] == [("put", f"fb/saved/SQ231/2026-11-04/leg1-{name}.json")]
     kept = json.loads(web.saved_path(root, "SQ231", "2026-11-04", 1, name).read_text())
     assert kept["request"]["dep"] == "07:40" and kept["brief"]["identity"]["code"] == "SQ231"
+
+
+def test_the_visitor_s_address_is_put_back_after_vercel_s_rewrite() -> None:
+    env = {"PATH_INFO": "/api/index", "QUERY_STRING": "dep=10%3A45&aircraft=Boeing+777&__path=/f/KL791/2026-11-20/1"}
+    back = hosted.asked(env)
+    assert back["PATH_INFO"] == "/f/KL791/2026-11-20/1"
+    assert back["QUERY_STRING"] == "dep=10%3A45&aircraft=Boeing+777"
+    assert hosted.asked({"PATH_INFO": "/api/index", "QUERY_STRING": "__path=/"})["PATH_INFO"] == "/"
+    assert hosted.asked({"PATH_INFO": "/api/index", "QUERY_STRING": "__path="})["PATH_INFO"] == "/"
+    plain = {"PATH_INFO": "/map", "QUERY_STRING": "q=1"}
+    assert hosted.asked(plain) is plain                      # a laptop's request is left alone
+
+
+def test_a_rewritten_request_reaches_its_page(table: vrs.RouteTable, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(hosted, "_app", web.create_app(
+        table, snapshots=None, cache=tmp_path / "c", saved=None, behind_proxy=True))
+    assert get(hosted.app, "/api/index?__path=/")[0].startswith("200")
+    status, _, body = get(hosted.app, "/api/index?q=amst&__path=/airports")
+    assert status.startswith("200") and "Amsterdam" in body
+    assert get(hosted.app, "/api/index?__path=/nope")[0].startswith("404")

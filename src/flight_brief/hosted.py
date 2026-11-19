@@ -28,6 +28,7 @@ import urllib.request
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 from .blobstore import BlobPath
 from .forecast.layer import TileSource
@@ -77,9 +78,24 @@ def build(environ: dict[str, str] | None = None, *, routes: Path | None = None,
 _app: Callable[..., Iterable[bytes]] | None = None
 
 
+PATH_KEY = "__path"   # vercel.json's rewrite puts the address that was asked for here
+
+
+def asked(environ: dict[str, Any]) -> dict[str, Any]:
+    """The request as the visitor made it. Vercel rewrites every address to this function and
+    hands over the function's own address; the rewrite carries the visitor's path in the query
+    string, and this puts it back."""
+    pairs = parse_qsl(environ.get("QUERY_STRING", ""), keep_blank_values=True)
+    path = next((v for k, v in pairs if k == PATH_KEY), None)
+    if path is None:
+        return environ
+    return {**environ, "PATH_INFO": "/" + path.lstrip("/"),
+            "QUERY_STRING": urlencode([(k, v) for k, v in pairs if k != PATH_KEY])}
+
+
 def app(environ: dict[str, Any], start_response: Callable[..., Any]) -> Iterable[bytes]:
     """The WSGI app, built on the first request and kept for the instance's life."""
     global _app  # noqa: PLW0603
     if _app is None:
         _app = build()
-    return _app(environ, start_response)
+    return _app(asked(environ), start_response)
