@@ -1,0 +1,60 @@
+# Builds the route table (flight numbers, airports, time zones, runway directions) and
+# publishes it as one release asset. The hosted page downloads it when it starts
+# (src/flight_brief/hosted.py); a laptop builds its own.
+#
+# Scheduled workflows run from the default branch only, and GitHub disables
+# them after 60 days without a commit; re-enable from the Actions tab.
+name: route-table
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"   # Mondays; the sources change slowly
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/flight_brief/vrs.py"
+      - "src/flight_brief/data/**"
+      - ".github/workflows/route-table.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: route-table-${{ github.event_name == 'pull_request' && github.ref || 'store' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write   # the release asset
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Build the table
+        run: |
+          uv run --locked --extra routes python -m flight_brief.vrs --out "$RUNNER_TEMP/vrs.sqlite"
+          gzip -9 -k "$RUNNER_TEMP/vrs.sqlite"
+          ls -l "$RUNNER_TEMP"/vrs.sqlite*
+      - name: Read it back
+        run: |
+          uv run --locked python - "$RUNNER_TEMP/vrs.sqlite" <<'PY'
+          import pathlib, sys
+          from flight_brief.vrs import RouteTable
+          table = RouteTable(pathlib.Path(sys.argv[1]))
+          ends = table.runways("EHAM")
+          assert len(ends) >= 8 and table.best_airport("AMS") is not None, ends
+          print("runway ends at EHAM:", len(ends))
+          PY
+      - name: Publish (not on a pull request)
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view route-table >/dev/null 2>&1 || gh release create route-table \
+            --title route-table --latest=false \
+            --notes "The route table the hosted page downloads at start. Rebuilt weekly by the route-table workflow. Sources and licences: README, section The brief."
+          gh release upload route-table "$RUNNER_TEMP/vrs.sqlite.gz" --clobber

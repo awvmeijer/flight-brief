@@ -4,23 +4,25 @@ version = "0.3.0"
 description = "Flight weather brief with a public forecast track record"
 requires-python = ">=3.11"
 dependencies = [
-    "eccodes>=2.38",
-    "eccodeslib>=2.38",
     "numpy>=2.0",
     "pydantic>=2.7",
     "pyproj>=3.6",
     "shapely>=2.0",
+    "vercel-blob>=0.6.0",
 ]
 
 [project.optional-dependencies]
 routes = ["timezonefinder>=6.5"]  # only to build the route table
+jobs = ["eccodes>=2.38", "eccodeslib>=2.38"]  # only to decode GRIB2: the tile jobs, the recon
 
 [project.scripts]
 brief = "flight_brief.cli:main"
 brief-web = "flight_brief.web:main"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+# The GRIB decoder is here too, so `uv sync` (the tests, the workflows) has it, while a
+# hosted copy of the page, which installs the dependencies above only, does not carry it.
+dev = ["pytest>=8", "eccodes>=2.38", "eccodeslib>=2.38"]
 
 [build-system]
 requires = ["hatchling"]
