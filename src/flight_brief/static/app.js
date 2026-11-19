@@ -17,7 +17,7 @@
     function close() { list.hidden = true; on = -1; }
     function choose(a) {
       input.value = a.iata;
-      if (sub) { sub.textContent = a.iata + " · " + a.name; }
+      if (sub) { sub.textContent = a.city + " · " + a.name; }
       close();
     }
     function draw() {
