@@ -10,6 +10,8 @@ The page: a small server-rendered site on the standard library (a WSGI app, serv
     GET /f/{code}/{date}/{leg}?dep=HH:MM      the brief, one address per flight and leg
     GET /f/{code}/{date}/{leg}/saved/{id}     a saved brief, drawn again from its record
     GET /airports?q=..                        airport suggestions for the route form, as JSON
+    GET /map                                  the world map: turbulence estimate, storm clouds
+    GET /map/field/{kind}/{run}/{hour}/{level}.png   one picture for it, drawn from a tile
     GET /static/..                            the app's own style sheets, scripts and fonts
 
 With `--snapshots` the briefs are read offline from that store as known at `--as-of`. Without
@@ -40,7 +42,7 @@ from typing import Any
 from urllib.parse import parse_qs
 from wsgiref.simple_server import make_server
 
-from . import page
+from . import page, worldmap
 from .brief import Brief
 from .resolve import normalise, resolve
 from .forecast.layer import TileSource, default_root
@@ -52,6 +54,9 @@ FLIGHT = re.compile(r"/f/([A-Za-z0-9]{3,8})/(\d{4}-\d{2}-\d{2})/([1-9])")
 SAVED = re.compile(r"/f/([A-Z0-9]{3,8})/(\d{4}-\d{2}-\d{2})/([1-9])/saved/"
                    r"(\d{8}T\d{4}Z-[0-9a-f]{8})")
 ROUTE = re.compile(r"/r/([A-Za-z0-9]{3})/([A-Za-z0-9]{3})/(\d{4}-\d{2}-\d{2})")
+# One picture of the world map: kind, run as YYYYMMDDTHH, forecast hour, flight level (0 for
+# storm clouds). Numbers are written one way only; the tile decides which of them exist.
+FIELD = re.compile(r"/map/field/(estimate|storm)/(\d{8}T\d{2})/([1-9]\d{0,2})/(0|[1-9]\d{1,2})\.png")
 # A place as a passenger types it: letters of any alphabet, digits, and . ' - and spaces.
 PLACE = re.compile(r"[^\W_](?:[^\W_]|[ .'\-])*")
 CLOCK = re.compile(r"(\d{1,2}):(\d{2})(?:([+-])(\d{2}):?(\d{2}))?")
@@ -285,6 +290,10 @@ def create_app(table: RouteTable, *, snapshots: Path | None, cache: Path, saved:
     # map the browser may send the origin, and only the origin: never the flight's address.
     referrer = ("Referrer-Policy", "strict-origin" if mapbox else "no-referrer")
     quiet = (NOINDEX, ("Cache-Control", "no-store"))
+    # The world map's pictures. One view of the map asks for many, so drawing them has its own
+    # count per address, `worldmap.DRAWS` for each brief the address may ask for.
+    fields = worldmap.Fields(tiles)
+    drawing = RateLimit(limit * worldmap.DRAWS, window, clock)
 
     def home(values: dict[str, str] | None = None, **kw: Any) -> str:
         return page.home_page(values, need_time=schedule is None, **kw)
@@ -508,6 +517,36 @@ def create_app(table: RouteTable, *, snapshots: Path | None, cache: Path, saved:
         return 200, [("Content-Type", "application/json; charset=utf-8"), NOINDEX,
                      ("Cache-Control", "max-age=3600")], body
 
+    def caller(environ: dict[str, Any]) -> str:
+        """The address a request is counted against."""
+        if behind_proxy and environ.get("HTTP_X_FORWARDED_FOR"):
+            return environ["HTTP_X_FORWARDED_FOR"].split(",")[-1].strip()[:64]
+        return environ.get("REMOTE_ADDR", "") or "unknown"
+
+    def world(address: str) -> Response:
+        """The world map, from the newest tiles known now. Counted like a brief."""
+        if not limiter.allow(address):
+            return limited()
+        estimate, storm = fields.newest(now())
+        body = worldmap.map_page(estimate, storm, mapbox, now(), forecasts=tiles is not None)
+        if estimate is None or not mapbox:
+            return html(200, body, *quiet)
+        return html(200, body, ("Cache-Control", "max-age=300"))
+
+    def field(match: re.Match[str], address: str) -> Response:
+        """One picture of the world map. A picture drawn before is served as it is; drawing
+        one is counted against the address."""
+        key = (match[1], match[2], int(match[3]), int(match[4]))
+        data = fields.cached(*key)
+        if data is None:
+            if not drawing.allow(address):
+                return limited()
+            data = fields.draw(*key, now())
+        if data is None:
+            return not_found()
+        return 200, [("Content-Type", "image/png"),
+                     ("Cache-Control", "public, max-age=3600")], data
+
     def respond(environ: dict[str, Any]) -> Response:
         method = environ.get("REQUEST_METHOD", "GET")
         if method not in ("GET", "HEAD"):
@@ -528,15 +567,18 @@ def create_app(table: RouteTable, *, snapshots: Path | None, cache: Path, saved:
                          ("Cache-Control", "max-age=86400")], files[path].read_bytes()
         if path == "/airports":
             return airports(query(environ) or {})
+        if path == "/map":
+            return world(caller(environ))
+        field_match = FIELD.fullmatch(path)
+        if field_match:
+            return field(field_match, caller(environ))
         saved_match, flight_match = SAVED.fullmatch(path), FLIGHT.fullmatch(path)
         route_match = ROUTE.fullmatch(path)
         if path not in ("/go", "/r") and not (saved_match or flight_match or route_match):
             return not_found()
         if saved_match:
             return replay(saved_match)
-        address = environ.get("REMOTE_ADDR", "") or "unknown"
-        if behind_proxy and environ.get("HTTP_X_FORWARDED_FOR"):
-            address = environ["HTTP_X_FORWARDED_FOR"].split(",")[-1].strip()[:64]
+        address = caller(environ)
         errors_to = environ.get("wsgi.errors", sys.stderr)
         if route_match:
             return route(route_match, address, errors_to)

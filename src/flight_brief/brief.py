@@ -5,8 +5,9 @@ Deterministic geometry and templates, no model calls. Everything is read "as kno
 different times.
 
 Wording rules this module keeps (docs/DESIGN.md):
-- no severity word (light, moderate, severe) in any text this code writes. An official
-  source's own text is carried in fields named `quoted` and shown in quotation marks;
+- a strength word (smooth, light, moderate, severe) is written only by `ride.py`, always with
+  the source that names it. No other text this code writes carries one. An official source's
+  own text is carried in fields named `quoted` and shown in quotation marks;
 - "nothing found" only where a source speaks for that hour. Beyond a source's reach the hour
   says "too early to know" or "none issued this far ahead", never nothing;
 - a feed with no recent snapshot says "last updated ... ago", never an empty list.
@@ -25,8 +26,8 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field
 from shapely.geometry import Point, Polygon
 
-from . import airport_wx, awc, vrs
-from .aircraft import Aircraft
+from . import airport_wx, awc, ride, vrs
+from .aircraft import Aircraft, weight_class
 from .core import snapshots
 from .core.encounters import encounters, expired_on_arrival, near_airports, unplaced
 from .core.hazards import from_sigmet
@@ -168,12 +169,45 @@ class ReportHit(Out):
     quoted: str  # the report's own text
 
 
+class RideSlot(Out):
+    """Ten minutes of the flight in the plain answer (`ride.py`)."""
+    start: datetime = Field(alias="from")  # read back under either name
+    end: datetime = Field(alias="to")
+    hour: int
+    level: int | None = None   # 0 smooth, 1 light, 2 moderate, 3 severe; None: not known
+    word: str | None = None
+    source: Literal["warning", "forecast", "estimate"] | None = None
+    storm: Literal["warning", "forecast"] | None = None
+    unknown: str | None = None  # why there is no level: too_early, not_covered, stale
+
+
+class Ride(Out):
+    """The plain answer for the whole flight."""
+    answer: list[str]            # the sentences; the first is the headline
+    slots: list[RideSlot]
+    minutes: dict[str, int]      # minutes per word, and "unknown"
+    weight_class: Literal["light", "medium", "heavy"]
+    weight_assumed: bool         # no aircraft type was given
+    forecast_thresholds: dict[str, float]   # NOAA's EDR values for light, moderate, severe
+    estimate_cuts: dict[str, float]         # the index values for light and moderate
+    meanings: dict[str, str]
+    key: str = ride.KEY
+    basis: list[str] = []                   # how the words were chosen
+    wind_kt: float | None = None            # mean wind along the route, positive from behind
+    wind_text: str | None = None
+
+
 class Hour(Out):
     index: int
     start: datetime = Field(serialization_alias="from")
     end: datetime = Field(serialization_alias="to")
     state: HourState
     agreement: Literal["agree", "disagree", "single"] | None
+    ride_level: int | None = None  # the highest level among the hour's stretches
+    ride_word: str | None = None
+    ride_source: Literal["warning", "forecast", "estimate"] | None = None
+    storm: Literal["warning", "forecast"] | None = None
+    wind_kt: float | None = None   # wind along the route, positive from behind
     shear: dict[str, Any] | None = None  # {model, run, layer, value, threshold, flagged}
     gtg: dict[str, Any] | None = None  # {run, edr, level, threshold, flagged, category}
     warnings: list[WarningHit] = []
@@ -204,12 +238,26 @@ class WxLine(Out):
     quoted: str | None = None  # the raw TAF or METAR
 
 
+class Crosswind(Out):
+    """The wind across the runway best aligned with it. The runway in use is not known."""
+    runway: str | None  # None when the wind is calm or variable: no runway end is favoured
+    crosswind_kt: int  # a variable wind counts whole: it may blow across any runway
+    headwind_kt: int | None  # along the runway; negative is a tailwind; None when variable
+    gust_crosswind_kt: int | None  # None when no gust is stated
+    wind: str  # the wind as stated: "250 at 20 kt, gusts 30"
+    basis: Literal["TAF", "METAR"]
+    text: str
+
+
 class AirportWx(Out):
     code: str
     name: str
     at: datetime  # departure for the origin, estimated arrival for the destination
     taf: WxLine
     metar: WxLine
+    # From the TAF for that moment; from the METAR only when the moment is within three
+    # hours and the TAF does not speak. None without a wind, and without runway directions.
+    crosswind: Crosswind | None = None
 
 
 class Provenance(Out):
@@ -269,6 +317,7 @@ class Brief(Out):
     flight: FlightBlock
     route: Route
     summary: str = ""
+    ride: Ride | None = None
     hours: list[Hour] = []
     near_airports: list[NearAirportHit] = []
     airports: dict[str, AirportWx] = {}
@@ -516,7 +565,7 @@ class _Shear:
                 return SourceLine(state="stale", text=(
                     f"Wind-shear index last updated {age(self.age)} ago")), None
             return _too_early(end - timedelta(hours=layer.SHEAR_REACH_H) + layer.SHEAR_LAG), None
-        got = [x for x in (tile.sample(p.lat, p.lon, self.cruise_fl, p.t) for p in seg) if x]
+        got = self._values(seg)
         if not got:
             return SourceLine(state="not_covered",
                               text="Not covered here: no index value on this stretch"), None
@@ -530,6 +579,17 @@ class _Shear:
                 f"({SHEAR_RATES})")), record
         return SourceLine(state="nothing_found", text=(
             f"Nothing found: index below the flag at {SHEAR_FLAG:.0f}")), record
+
+
+    def _values(self, seg: list[TimedPoint]) -> list[tuple[float, int, int]]:
+        assert self.found is not None
+        tile = self.found[0]
+        return [x for x in (tile.sample(p.lat, p.lon, self.cruise_fl, p.t) for p in seg) if x]
+
+    def peak(self, seg: list[TimedPoint]) -> float | None:
+        """The highest index value along a stretch of an hour this source speaks for."""
+        got = self._values(seg) if self.found is not None else []
+        return max(got)[0] if got else None
 
 
 class _Gtg:
@@ -571,13 +631,7 @@ class _Gtg:
                                   text=f"GTG last updated {age(self.age)} ago"), None
             return _too_early(end - timedelta(hours=layer.GTG_REACH_H) + layer.GTG_LAG), None
         level = min(tile.flight_levels, key=lambda fl: abs(fl - self.cruise_fl))
-        values = []
-        for p in seg:
-            hour = round((p.t - run) / timedelta(hours=1))
-            if hour in tile.forecast_hours:
-                v = tile.sample(p.lat, (p.lon + 180) % 360 - 180, level, hour)
-                if not math.isnan(v):
-                    values.append(v)
+        values = self._values(seg)
         if not values:
             return SourceLine(state="not_covered",
                               text="Not covered here: outside the GTG grid"), None
@@ -591,6 +645,72 @@ class _Gtg:
                 "(this project's flag; its hit rate is not measured yet)")), record
         return SourceLine(state="nothing_found", text=(
             f"Nothing found: GTG below the flag at {GTG_FLAG:.2f}")), record
+
+
+    def _values(self, seg: list[TimedPoint]) -> list[float]:
+        assert self.found is not None
+        tile, run, _ = self.found
+        level = min(tile.flight_levels, key=lambda fl: abs(fl - self.cruise_fl))
+        values = []
+        for p in seg:
+            hour = round((p.t - run) / timedelta(hours=1))
+            if hour in tile.forecast_hours:
+                v = tile.sample(p.lat, (p.lon + 180) % 360 - 180, level, hour)
+                if not math.isnan(v):
+                    values.append(v)
+        return values
+
+    def peak(self, seg: list[TimedPoint]) -> float | None:
+        """The highest forecast value along a stretch of an hour this source speaks for."""
+        values = self._values(seg) if self.found is not None else []
+        return max(values) if values else None
+
+
+WX_LICENCE = ("Winds and convective cloud tops from NOAA GFS (US Government work, public "
+              "domain), saved by this project")
+
+
+class _Wx:
+    """Winds along the route and how high the model's storm clouds reach, from the small tile
+    the wind-shear job saves beside its own."""
+
+    def __init__(self, tiles: TileSource, as_of: datetime, cruise_fl: int):
+        self.cruise_fl = cruise_fl
+        self.found = tiles.wx(as_of)
+
+    def provenance(self) -> Provenance | None:
+        if self.found is None:
+            return None
+        _, run, url = self.found
+        return Provenance(source="wind and storm clouds", fetched_at=None, issued_at=run,
+                          url_without_secrets=url, licence=WX_LICENCE)
+
+    def storm(self, seg: list[TimedPoint]) -> bool | None:
+        """Whether the model has a storm cloud reaching near cruise level on this stretch.
+        None: the tile does not speak for it."""
+        if self.found is None:
+            return None
+        got = [x for x in (self.found[0].storm_top(p.lat, p.lon, p.t) for p in seg) if x]
+        if not got:
+            return None
+        return any(ride.storm_from_top(top, self.cruise_fl) for top, _ in got)
+
+    def along(self, seg: list[TimedPoint]) -> float | None:
+        """Wind along the direction of flight at the middle of a stretch, in knots, positive
+        from behind."""
+        if self.found is None or len(seg) < 2:
+            return None
+        a, b = seg[0], seg[-1]
+        mid = seg[len(seg) // 2]
+        wind = self.found[0].wind(mid.lat, mid.lon, self.cruise_fl, mid.t)
+        if wind is None:
+            return None
+        lat1, lat2 = math.radians(a.lat), math.radians(b.lat)
+        dlon = math.radians(b.lon - a.lon)
+        bearing = math.atan2(math.sin(dlon) * math.cos(lat2),
+                             math.cos(lat1) * math.sin(lat2)
+                             - math.sin(lat1) * math.cos(lat2) * math.cos(dlon))
+        return wind[0] * math.sin(bearing) + wind[1] * math.cos(bearing)
 
 
 def _last_update(root: Path, source: str, as_of: datetime) -> str:
@@ -673,7 +793,10 @@ def _reports_near(reports: list[dict[str, Any]], seg: list[TimedPoint],
 
 
 def _airport(root: Path, place: vrs.Airport, at: datetime, as_of: datetime,
-             used: dict[str, Envelope | None]) -> AirportWx:
+             used: dict[str, Envelope | None],
+             runways: list[vrs.Runway] | None = None) -> AirportWx:
+    wind: tuple[Any, Any, Any] | None = None  # direction, speed, gust, as the record has them
+    basis: Literal["TAF", "METAR"] = "TAF"
     taf_env = used.setdefault("taf", snapshots.latest(root, "taf", as_of, max_age=MAX_AGE["taf"]))
     metar_env = used.setdefault(
         "metar", snapshots.latest(root, "metar", as_of, max_age=MAX_AGE["metar"]))
@@ -689,6 +812,7 @@ def _airport(root: Path, place: vrs.Airport, at: datetime, as_of: datetime,
         else:
             taf = WxLine(state="ok", text=airport_wx.taf_at(record, at.timestamp()),
                          issued_at=record.get("issueTime"), quoted=quote(record["rawTAF"]))
+            wind = airport_wx.taf_wind(record, at.timestamp())
     if metar_env is None:
         metar = WxLine(state="stale", text=_last_update(root, "metar", as_of))
     else:
@@ -702,7 +826,23 @@ def _airport(root: Path, place: vrs.Airport, at: datetime, as_of: datetime,
             seen = datetime.fromtimestamp(last["obsTime"], UTC)
             metar = WxLine(state="ok", text=f"{airport_wx.metar_now(last)} (observed {hhmm(seen)})",
                            issued_at=seen, quoted=quote(last["rawOb"]))
-    return AirportWx(code=place.code, name=place.name, at=at, taf=taf, metar=metar)
+            # The wind now stands for then only when both are close: the moment is within
+            # the reach, and the observation is not older than that either.
+            reach = timedelta(hours=airport_wx.METAR_REACH_H)
+            if wind is None and abs(at - as_of) <= reach and as_of - seen <= reach:
+                wind, basis = (last.get("wdir"), last.get("wspd"), last.get("wgst")), "METAR"
+    cross = None
+    found = airport_wx.crosswind(*wind, runways) if wind and runways else None
+    if wind and found:
+        cross = Crosswind(
+            runway=found.runway, crosswind_kt=round(found.crosswind_kt),
+            headwind_kt=None if found.headwind_kt is None else round(found.headwind_kt),
+            gust_crosswind_kt=(None if found.gust_crosswind_kt is None
+                               else round(found.gust_crosswind_kt)),
+            wind=airport_wx.wind_words(*wind), basis=basis,
+            text=airport_wx.crosswind_text(found, basis))
+    return AirportWx(code=place.code, name=place.name, at=at, taf=taf, metar=metar,
+                     crosswind=cross)
 
 
 # --- the brief -----------------------------------------------------------------------------
@@ -740,11 +880,31 @@ def _summary(hours: list[Hour]) -> str:
     return f"{head}. {'. '.join(parts)}."
 
 
+def _ride(slots: list[RideSlot], storm_known: list[bool], along: list[float],
+          takeoff: datetime, weight: str, assumed: bool) -> Ride:
+    plain = [ride.Slot(start=x.start, end=x.end, level=x.level, source=x.source, storm=x.storm,
+                       storm_known=storm_known[x.hour - 1], unknown=x.unknown) for x in slots]
+    sentences = ride.answer(plain, takeoff)
+    wind_text = ride.wind_sentence(along)
+    minutes = {w: 0 for w in (*ride.WORDS, "unknown")}
+    for x in slots:
+        minutes[x.word or "unknown"] += round((x.end - x.start).total_seconds() / 60)
+    lgt, mod, sev = ride.NOAA_EDR[weight]
+    cut_l, cut_m = ride.ESTIMATE_CUTS[weight]
+    return Ride(answer=sentences, slots=slots, minutes=minutes,
+                weight_class=weight, weight_assumed=assumed,  # type: ignore[arg-type]
+                forecast_thresholds={"light": lgt, "moderate": mod, "severe": sev},
+                estimate_cuts={"light": cut_l, "moderate": cut_m}, meanings=dict(ride.MEANING),
+                basis=ride.explain(weight, assumed),
+                wind_kt=round(sum(along) / len(along)) if along else None, wind_text=wind_text)
+
+
 def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datetime,
                root: Path, callsign: str | None = None, cruise_fl: int | None = None,
                groundspeed_kt: float | None = None, arrival: datetime | None = None,
                aircraft: Aircraft | None = None, tiles: TileSource | None = None,
-               noted: list[str] | None = None) -> Brief:
+               noted: list[str] | None = None,
+               runways: dict[str, list[vrs.Runway]] | None = None) -> Brief:
     """The brief for one leg as known at `as_of`, read from the snapshot store at `root`.
     `departure` and the optional `arrival` are the gate times the user typed. With `tiles`,
     the wind-shear index and GTG are read too, and the brief reaches as far as the index."""
@@ -811,12 +971,18 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
 
     shear = _Shear(tiles, as_of, flight.cruise_fl) if tiles is not None else None
     gtg = _Gtg(tiles, as_of, flight.cruise_fl) if tiles is not None and any(over_us) else None
+    wx = _Wx(tiles, as_of, flight.cruise_fl) if tiles is not None else None
     provenance += [p for p in (shear.provenance(as_of) if shear else None,
-                               gtg.provenance(as_of) if gtg else None) if p is not None]
+                               gtg.provenance(as_of) if gtg else None,
+                               wx.provenance() if wx else None) if p is not None]
+    weight = weight_class(aircraft)
+    slots: list[RideSlot] = []
+    along_all: list[float] = []
     if tiles is not None and tiles.errors:
         notes.append("A forecast tile could not be fetched: " + "; ".join(tiles.errors[:2]))
 
     hours: list[Hour] = []
+    storm_known: list[bool] = []
     for i, us in enumerate(over_us):
         start = takeoff + timedelta(hours=i)
         end = min(start + timedelta(hours=1), landing)
@@ -910,9 +1076,48 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
         agreement: Literal["agree", "disagree", "single"] | None = (
             None if not speaking else "single" if len(speaking) == 1
             else "agree" if len(set(speaking)) == 1 else "disagree")
+        # The plain answer for this hour, ten minutes at a time (ride.py).
+        speaks = {k: v.state in SPEAKS for k, v in sources.items()}
+        why = next((sources[k].state for k in ("shear", "gtg") if k in sources
+                    and sources[k].state in ("too_early", "stale", "not_covered")), "too_early")
+        mine: list[RideSlot] = []
+        along: list[float] = []
+        s0 = start
+        while s0 < end:
+            s1 = min(s0 + timedelta(minutes=ride.SLOT_MIN), end)
+            sseg = _segment(points, s0, s1)
+            kinds = [h.kind for h in [*hits, *g_hits] if h.entry < s1 and h.exit >= s0]
+            level, source = ride.slot_level(
+                warning_kinds=kinds, weight=weight,
+                edr=gtg.peak(sseg) if gtg is not None and speaks.get("gtg") else None,
+                index=shear.peak(sseg) if shear is not None and speaks.get("shear") else None)
+            cloud = wx.storm(sseg) if wx is not None else None
+            storm: Literal["warning", "forecast"] | None = (
+                "warning" if any(k in ride.STORM_KINDS for k in kinds)
+                else "forecast" if cloud else None)
+            mine.append(RideSlot(
+                start=s0, end=s1, hour=i + 1, level=level, source=source, storm=storm,
+                word=None if level is None else ride.WORDS[level],
+                unknown=None if level is not None else why))
+            wind = wx.along(sseg) if wx is not None else None
+            if wind is not None:
+                along.append(wind)
+            s0 = s1
+        slots += mine
+        along_all += along
+        top = max((x for x in mine if x.level is not None), key=lambda x: x.level or 0,
+                  default=None)
         hours.append(Hour(index=i + 1, start=start, end=end, state=state, agreement=agreement,
+                          ride_level=top.level if top else None,
+                          ride_word=top.word if top else None,
+                          ride_source=top.source if top else None,
+                          storm=("warning" if any(x.storm == "warning" for x in mine)
+                                 else "forecast" if any(x.storm for x in mine) else None),
+                          wind_kt=round(sum(along) / len(along)) if along else None,
                           shear=shear_rec, gtg=gtg_rec, warnings=hits, expired_warnings=late, gairmets=g_hits, reports=near,
                           sources=sources))
+        storm_known.append(speaks.get("warnings", False) or (wx is not None and any(
+            wx.storm(_segment(points, x.start, x.end)) is not None for x in mine)))
 
     names = {"origin": (leg.origin.code, "climb"), "destination": (leg.destination.code, "descent")}
     near_hits = [NearAirportHit(
@@ -923,17 +1128,24 @@ def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datet
         for n in near_airports(flight, sigmets, NEAR_NM)]
 
     used: dict[str, Envelope | None] = {}
-    airports = {"origin": _airport(root, leg.origin, departure, as_of, used),
-                "destination": _airport(root, leg.destination, arrival, as_of, used)}
+    airports = {"origin": _airport(root, leg.origin, departure, as_of, used,
+                                   (runways or {}).get(leg.origin.code)),
+                "destination": _airport(root, leg.destination, arrival, as_of, used,
+                                        (runways or {}).get(leg.destination.code))}
     provenance += [_provenance(used[s], s, as_of) for s in ("taf", "metar")]
     provenance.append(Provenance(source="route table", fetched_at=None, issued_at=None,
                                  url_without_secrets=vrs.ARCHIVE, licence=vrs.LICENCE))
+    if any(a.crosswind is not None for a in airports.values()):
+        provenance.append(Provenance(source="runways", fetched_at=None, issued_at=None,
+                                     url_without_secrets=vrs.RUNWAYS,
+                                     licence=vrs.RUNWAYS_LICENCE))
     if sig_env is None:
         notes.append(_last_update(root, "sigmet", as_of))
 
     return Brief(
         status="ok", **{**base, "notes": [*notes, TRACKER, NOT_OPS]},
-        summary=_summary(hours), hours=hours, near_airports=near_hits, airports=airports,
+        summary=_summary(hours), hours=hours,
+        ride=_ride(slots, storm_known, along_all, takeoff, weight, aircraft is None), near_airports=near_hits, airports=airports,
         warnings_without_area=[{"hazard_id": h.hazard_id, "quoted": quote(h.raw)[:600]}
                                for h in unplaced(sigmets) if h.valid_to >= as_of],
         provenance=provenance)

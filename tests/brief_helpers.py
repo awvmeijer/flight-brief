@@ -49,13 +49,33 @@ def unquoted(text: str) -> str:
     return re.sub(r'"[^"]*"', '""', text)
 
 
+# Where a strength word may stand in a record: the plain answer, which only `ride.py` writes.
+RIDE_KEYS = ("ride", "ride_word")
+
+
 def own_strings(value: Any, key: str = "") -> list[str]:
-    """Every string in a brief record that is this project's wording, not a `quoted` field."""
+    """Every string in a brief record that is this project's wording outside the plain
+    answer: not a `quoted` field, and not what `ride.py` wrote."""
+    if key in RIDE_KEYS:
+        return []
     if isinstance(value, dict):
         return [s for k, v in value.items() for s in own_strings(v, k)]
     if isinstance(value, list):
         return [s for v in value for s in own_strings(v, key)]
     return [unquoted(value)] if isinstance(value, str) and key != "quoted" else []
+
+
+def without_ride(text: str) -> str:
+    """A rendered brief without the block under "The ride" (it ends at the next empty line)."""
+    out, inside = [], False
+    for line in text.splitlines():
+        if line == "The ride":
+            inside = True
+        elif inside and not line.strip():
+            inside = False
+        if not inside:
+            out.append(line)
+    return "\n".join(out)
 
 
 def ring(lon0: float, lon1: float, lat0: float, lat1: float) -> list[dict[str, float]]:

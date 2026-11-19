@@ -2,6 +2,8 @@
 
 Every piece of an official source's own text is printed inside double quotation marks, and
 nothing else is: the wording check relies on that to tell quoted text from this code's words.
+The plain answer (`ride.py`) is the block under "The ride", up to the next empty line; it is
+the only place outside quotation marks where a strength word stands.
 """
 
 from datetime import datetime
@@ -56,6 +58,32 @@ def _local(t: datetime, tz: str | None) -> str:
     return local.strftime("%a %d %b %H:%M") + f" UTC{sign}{hh}" + (f":{mm:02d}" if mm else "")
 
 
+RIDE_SYMBOL = (".", "-", "=", "#")
+RIDE_LEGEND = ". smooth  - light  = moderate  # severe  ? not known yet  (ten minutes each)"
+RIDE_SOURCE = {"warning": "official warning", "forecast": "NOAA forecast", "estimate": "estimate"}
+
+
+def ride_block(brief: Brief) -> list[str]:
+    """The plain answer: the sentences, then ten minutes per character, grouped by hour."""
+    r = brief.ride
+    if r is None:
+        return []
+    out = ["The ride", *[f"  {line}" for line in r.answer]]
+    if r.wind_text:
+        out.append(f"  {r.wind_text}")
+    groups: dict[int, str] = {}
+    for x in r.slots:
+        groups[x.hour] = groups.get(x.hour, "") + ("?" if x.level is None else RIDE_SYMBOL[x.level])
+    out.append("  " + " ".join(groups[h] for h in sorted(groups)))
+    out.append("  " + RIDE_LEGEND)
+    used = [s for s in RIDE_SOURCE if any(x.source == s for x in r.slots)]
+    if used:
+        out.append("  From: " + ", ".join(RIDE_SOURCE[s] for s in used) + ". Words for a "
+                   f"{r.weight_class} aircraft"
+                   + (" (no aircraft type given)" if r.weight_assumed else ""))
+    return [*out, ""]
+
+
 def render(brief: Brief) -> str:
     f = brief.flight
     out = [f"{f.code} . {f.origin.location} to {f.destination.location} . "
@@ -76,7 +104,7 @@ def render(brief: Brief) -> str:
                f"issued {age(lead)} before departure")
     out.append(f"In the air about {hhmm(f.takeoff_utc)} to {hhmm(f.landing_utc)} . "
                "hour 1 starts at take-off")
-    out += ["", brief.summary, ""]
+    out += ["", *ride_block(brief), brief.summary, ""]
     out.append("hour  " + " ".join(f"{h.index:>2}" for h in brief.hours))
     out.append("      " + " ".join(f"{SYMBOL[h.state]:>2}" for h in brief.hours) + "     " + LEGEND)
     out += ["", "What each source says"]
@@ -128,6 +156,8 @@ def render(brief: Brief) -> str:
         out.append(f"  METAR now      {a.metar.text}")
         if a.metar.quoted:
             out.append(f'                 "{a.metar.quoted}"')
+        if a.crosswind:
+            out.append(f"  Crosswind      {a.crosswind.text}")
 
     if brief.warnings_without_area:
         out += ["", f"{len(brief.warnings_without_area)} warning(s) worldwide came without an "

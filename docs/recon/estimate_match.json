@@ -1,0 +1,114 @@
+{
+ "pairs": 42600,
+ "tile_hours": 142,
+ "segment_nm": 80.0,
+ "point_spacing_nm": 20.0,
+ "rank_correlation": 0.612,
+ "classes": {
+  "light": {
+   "edr": {
+    "light": 0.13,
+    "moderate": 0.16,
+    "severe": 0.36
+   },
+   "share_of_stretches_at_or_above": {
+    "light": 0.2813,
+    "moderate": 0.1546,
+    "severe": 0.0016
+   },
+   "index_at_the_same_share": {
+    "light": 8.0,
+    "moderate": 12.0
+   },
+   "stretches_by_official_then_estimate": [
+    [
+     25538,
+     2933,
+     2144
+    ],
+    [
+     2482,
+     1235,
+     1682
+    ],
+    [
+     2222,
+     1274,
+     3090
+    ]
+   ],
+   "same_level": 0.701,
+   "within_one_level": 0.898
+  },
+  "medium": {
+   "edr": {
+    "light": 0.15,
+    "moderate": 0.2,
+    "severe": 0.44
+   },
+   "share_of_stretches_at_or_above": {
+    "light": 0.1889,
+    "moderate": 0.0628,
+    "severe": 0.0003
+   },
+   "index_at_the_same_share": {
+    "light": 10.5,
+    "moderate": 20.0
+   },
+   "stretches_by_official_then_estimate": [
+    [
+     30244,
+     3361,
+     948
+    ],
+    [
+     2772,
+     1644,
+     957
+    ],
+    [
+     1060,
+     814,
+     800
+    ]
+   ],
+   "same_level": 0.767,
+   "within_one_level": 0.953
+  },
+  "heavy": {
+   "edr": {
+    "light": 0.17,
+    "moderate": 0.24,
+    "severe": 0.54
+   },
+   "share_of_stretches_at_or_above": {
+    "light": 0.125,
+    "moderate": 0.023,
+    "severe": 0.0
+   },
+   "index_at_the_same_share": {
+    "light": 14.0,
+    "moderate": 30.0
+   },
+   "stretches_by_official_then_estimate": [
+    [
+     34080,
+     2763,
+     430
+    ],
+    [
+     2694,
+     1270,
+     384
+    ],
+    [
+     448,
+     358,
+     173
+    ]
+   ],
+   "same_level": 0.834,
+   "within_one_level": 0.979
+  }
+ }
+}
