@@ -2,6 +2,8 @@
 
 It validates the input, resolves the flight, optionally lets a fetcher fill the snapshot
 store for this leg, and runs the engine. Nothing upstream is called before the input is valid.
+An aircraft type that is not recognised does not stop the brief: it is noted among the
+assumptions and the distance decides, as it does when no type is given.
 """
 
 from collections.abc import Callable
@@ -12,7 +14,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from . import brief as engine
-from .aircraft import lookup
+from .aircraft import UnknownAircraft, lookup
 from .brief import Brief, arrival_utc, make_brief, make_flight, to_utc
 from .core.models import PassengerFlight
 from .forecast.layer import TileSource
@@ -88,13 +90,21 @@ def request_brief(req: BriefRequest, table: RouteTable, root: Path, as_of: datet
         departure = to_utc(day, req.dep, leg.origin.tz)
         arrival = arrival_utc(departure, req.arr, leg.destination.tz) if req.arr else None
         assert found.code is not None
-        aircraft = lookup(req.aircraft, table) if req.aircraft else None
+        aircraft, noted = None, []
+        if req.aircraft:
+            try:
+                aircraft = lookup(req.aircraft, table)
+            except UnknownAircraft:
+                # A schedule names aircraft in its own words, and a passenger may too. A name
+                # this project cannot place is no reason to refuse the brief: say so and go on.
+                noted = [f"Aircraft type '{req.aircraft.strip()}' was not recognised, so the "
+                         "distance decides the cruise level and the speed"]
         if fetch is not None and timedelta(0) < departure - as_of <= timedelta(
                 hours=engine.horizon_h(tiles is not None)):
             flight = make_flight(found.code, leg, departure, req.fl, req.gs, arrival, aircraft)
             fetch(root, leg, flight, as_of)
         return make_brief(found.code, leg, day, departure, as_of, root, callsign=callsign,
                           cruise_fl=req.fl, groundspeed_kt=req.gs, arrival=arrival,
-                          aircraft=aircraft, tiles=tiles)
+                          aircraft=aircraft, tiles=tiles, noted=noted)
     except ValueError as exc:
         return Problem(status="invalid", message=str(exc))

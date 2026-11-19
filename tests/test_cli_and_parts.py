@@ -375,15 +375,82 @@ def test_types_and_words_the_brief_knows(table: vrs.RouteTable, typed: str, spee
     assert (found.groundspeed_kt, found.cruise_fl) == (speed, level)
 
 
-@pytest.mark.parametrize(("typed", "says"), [
-    ("ZZZZ", "'ZZZZ' is not an aircraft type this brief knows. Use an ICAO type code"),
-    ("A139", "'A139' is not an aeroplane this brief has a default speed for"),  # a helicopter
+@pytest.mark.parametrize("typed", ["ZZZZ", "A139", "Zeppelin NT"])  # A139 is a helicopter
+def test_an_unknown_type_is_noted_and_the_distance_decides(
+        table: vrs.RouteTable, typed: str, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(run(table, *VT956, "--json")) == 0
+    plain = json.loads(capsys.readouterr().out)["flight"]
+    assert cli.main(run(table, *VT956, "--aircraft", typed, "--json")) == 0
+    f = json.loads(capsys.readouterr().out)["flight"]
+    assert f["assumptions"][:-1] == plain["assumptions"]
+    assert f["assumptions"][-1] == (f"Aircraft type '{typed}' was not recognised, so the "
+                                    "distance decides the cruise level and the speed")
+    for key in ("groundspeed_kt", "cruise_fl", "arrival_utc", "aircraft"):
+        assert f[key] == plain[key], key
+    assert cli.main(run(table, *VT956, "--aircraft", typed)) == 0
+    assert f"Aircraft type '{typed}' was not recognised" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("typed", "code", "kind", "speed"), [
+    # family names
+    ("777", "777", "jet", None), ("B777", "777", "jet", None), ("b-777", "777", "jet", None),
+    ("737 MAX", "737 MAX", "jet", None), ("A350", "A350", "jet", None),
+    ("A320neo", "A320", "jet", None), ("787-9", "787", "jet", None),
+    ("E190", "E190", "jet", None), ("CRJ900", "CRJ9", "jet", None),
+    ("A330", "A330", "jet", None), ("330", "A330", "jet", None), ("A220", "BCS3", "jet", None),
+    # a maker and a model, as a schedule writes them
+    ("Boeing 777-300ER", "777", "jet", None), ("Airbus A350-900", "A350", "jet", None),
+    ("Boeing 737 MAX 8", "737 MAX", "jet", None), ("Airbus A321neo", "A321", "jet", None),
+    ("Embraer 190", "E190", "jet", None), ("Embraer E195-E2", "E195", "jet", None),
+    ("Embraer ERJ-145", "E145", "jet", None), ("Bombardier CRJ900", "CRJ9", "jet", None),
+    ("Fokker 100", "F100", "jet", None), ("Sukhoi Superjet 100", "SU95", "jet", None),
+    ("ATR 72-600", "AT72", "turboprop", 275.0), ("ATR 42-500", "AT45", "turboprop", 290.0),
+    ("De Havilland Canada DHC-8-400 Dash 8Q", "DH8D", "turboprop", 360.0),
+    ("Bombardier Dash 8 Q300", "DH8C", "turboprop", 275.0), ("Dash 8", "DH8D", "turboprop", 360.0),
+    ("Saab 340", "SF34", "turboprop", 275.0), ("Cessna 208 Caravan", "C208", "turboprop", 170.0),
+    # what worked before still does
+    ("B773", "B773", "jet", None), ("at-72", "AT72", "turboprop", 275.0),
+    ("Jet", "jet", "jet", None), ("A35", "A35", "piston", 140.0),
 ])
-def test_an_unknown_type_is_refused(table: vrs.RouteTable, typed: str, says: str,
-                                    capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(run(table, *VT956, "--aircraft", typed, "--json")) == 2
-    out = json.loads(capsys.readouterr().out)
-    assert out["status"] == "invalid" and says in out["message"]
+def test_names_a_passenger_or_a_schedule_uses_for_an_aircraft(
+        wide: vrs.RouteTable, typed: str, code: str, kind: str, speed: float | None) -> None:
+    from flight_brief.aircraft import lookup
+
+    found = lookup(typed, wide)
+    assert (found.code, found.kind, found.groundspeed_kt) == (code, kind, speed)
+    assert (found.cruise_fl is None) == (speed is None)
+
+
+@pytest.mark.parametrize("typed", ["77", "Boeing", "Concorde", "A139", "B", "7", "DH8", "---"])
+def test_a_name_that_is_no_aircraft_type_still_raises(wide: vrs.RouteTable, typed: str) -> None:
+    from flight_brief.aircraft import UnknownAircraft, lookup
+
+    with pytest.raises(UnknownAircraft, match="Use an ICAO type code such as AT72 or A320"):
+        lookup(typed, wide)
+
+
+def test_a_family_whose_types_disagree_on_the_engine_is_not_guessed(
+        wide: vrs.RouteTable) -> None:
+    from flight_brief.aircraft import UnknownAircraft, lookup
+
+    # C206 is a piston type and C208 a turboprop: a Cessna 205 is not placed by its family.
+    assert {e for _, e, _ in wide.model_family("C20_")} == {"P", "T"}
+    with pytest.raises(UnknownAircraft):
+        lookup("Cessna 205", wide)
+    # A33P is a piston type beside the A330s; the numbered variants decide.
+    assert ("A33P", "P", "L") in wide.model_family("A33_")
+    assert lookup("Airbus A330-200", wide).kind == "jet"
+
+
+def test_the_brief_is_made_for_a_schedules_aircraft_name(
+        wide: vrs.RouteTable, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(run(wide, *VT956, "--aircraft", "ATR 72-600", "--json")) == 0
+    f = json.loads(capsys.readouterr().out)["flight"]
+    assert (f["groundspeed_kt"], f["cruise_fl"], f["aircraft"]) == (275.0, 240, "AT72")
+    assert cli.main(run(wide, *VT956, "--aircraft", "Boeing 777-300ER", "--json")) == 0
+    notes = " | ".join(json.loads(capsys.readouterr().out)["flight"]["assumptions"])
+    assert "777, a jet: no figure of its own, so the distance decides" in notes
+    assert "not recognised" not in notes
 
 
 def test_a_table_built_before_aircraft_types_says_to_rebuild(tmp_path: Path) -> None:

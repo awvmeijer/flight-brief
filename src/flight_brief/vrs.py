@@ -19,7 +19,9 @@ import io
 import re
 import sqlite3
 import tarfile
+import unicodedata
 import urllib.request
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +38,7 @@ SUPPLEMENT = "OurAirports, public domain (The Unlicense)"
 EXTRA_ROUTES = Path(__file__).parent / "data" / "routes_extra.csv"
 MEMBER = re.compile(r"(?:^|/)(airlines|routes|airports|model-type)/schema-01/(?:.*/)?[^/]+\.csv$")
 TzOf = Callable[[float, float], str | None]
+AIRPORT_KEYS = ("code", "name", "icao", "iata", "location", "country", "lat", "lon", "tz")
 
 SCHEMA = """
 CREATE TABLE airlines (code TEXT, name TEXT, icao TEXT, iata TEXT);
@@ -67,6 +70,20 @@ class Airport(BaseModel):
     lat: float
     lon: float
     tz: str | None  # IANA zone name; None when the build could not place the airport
+
+
+class RouteFlight(BaseModel):
+    """One flight number that flies a given pair of airports, as a passenger writes it."""
+    number: str  # the airline's IATA code and the number, KL791; the ICAO code without one
+    airline: str  # the airline's name
+    callsign: str
+    leg: int  # 1-based: which leg of the callsign's route the pair is
+
+
+def fold(text: str) -> str:
+    """Text as a search compares it: no accents, no case, punctuation read as a space."""
+    plain = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", plain.casefold()).split())
 
 
 def _rows(text: str) -> Iterator[dict[str, str]]:
@@ -163,6 +180,7 @@ class RouteTable:
                 f"no route table at {path}; build one with: python -m flight_brief.vrs --out {path}")
         self.path = path
         self.db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        self._airports: list[tuple[Airport, str, str, int]] | None = None
 
     def meta(self, key: str) -> str | None:
         row = self.db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
@@ -194,6 +212,15 @@ class RouteTable:
                              f"it with: python -m flight_brief.vrs --out {self.path}") from exc
         return (row[0], row[1]) if row else None
 
+    def model_family(self, like: str) -> list[tuple[str, str, str]]:
+        """(designator, engine code, species code) of every aircraft type whose designator
+        fits the pattern, where `_` stands for any one character: `B77_` is the 777s."""
+        try:
+            return self.db.execute("SELECT icao, engine, species FROM model_types "
+                                   "WHERE icao LIKE ? ORDER BY icao", (like,)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
     def airport(self, code: str) -> Airport | None:
         """An airport by ICAO code (four characters) or IATA code (three)."""
         column = "iata" if len(code) == 3 else "code"
@@ -202,8 +229,93 @@ class RouteTable:
             f"WHERE {column} = ? ORDER BY code", (code.upper(),)).fetchone()
         if row is None:
             return None
-        keys = ("code", "name", "icao", "iata", "location", "country", "lat", "lon", "tz")
-        return Airport(**dict(zip(keys, row, strict=True)))
+        return Airport(**dict(zip(AIRPORT_KEYS, row, strict=True)))
+
+    def flights_between(self, origin_icao: str, destination_icao: str) -> list[RouteFlight]:
+        """Every flight number whose route has the two airports as consecutive stops, by
+        airline name and then number. The table has no times and no days: a number listed
+        here flew this pair at some time, not necessarily on the day asked about. This reads
+        the whole route column once, about 65 ms on the full table."""
+        pair = [origin_icao.upper(), destination_icao.upper()]
+        rows = self.db.execute(
+            "SELECT callsign, airline, number, airports FROM routes WHERE instr(airports, ?) > 0",
+            ("-".join(pair),)).fetchall()
+        found = []
+        for callsign, code, number, airports in rows:
+            stops = airports.split("-")
+            leg = next((i + 1 for i in range(len(stops) - 1) if stops[i:i + 2] == pair), None)
+            if leg is None:
+                continue
+            line = self.db.execute("SELECT name, icao, iata FROM airlines WHERE code = ? "
+                                   "ORDER BY name", (code,)).fetchone()
+            name, icao, iata = line or (code, code, "")
+            found.append(RouteFlight(number=(iata or icao or code) + number, airline=name,
+                                     callsign=callsign, leg=leg))
+        digits = re.compile(r"\d+")
+
+        def order(f: RouteFlight) -> tuple[str, int, str]:
+            n = digits.search(f.number[2:])
+            return f.airline.casefold(), int(n[0]) if n else 0, f.number
+
+        return sorted(found, key=order)
+
+    def _listed(self) -> list[tuple[Airport, str, str, int]]:
+        """Every airport with an IATA code, with its city and name folded for a search and
+        the number of routes that use it. Read once, on the first search: about 0.4 s on the
+        full table, most of it counting the routes."""
+        if self._airports is None:
+            used: Counter[str] = Counter()
+            for (airports,) in self.db.execute("SELECT airports FROM routes"):
+                used.update(airports.split("-"))
+            rows = self.db.execute(
+                "SELECT code, name, icao, iata, location, country, lat, lon, tz FROM airports "
+                "WHERE iata <> '' ORDER BY code").fetchall()
+            places = [Airport(**dict(zip(AIRPORT_KEYS, row, strict=True))) for row in rows]
+            self._airports = [(p, fold(p.location), fold(p.name), used[p.code]) for p in places]
+        return self._airports
+
+    def _ranked(self, text: str) -> list[tuple[int, Airport]]:
+        """(rank, airport), best first. Rank 0 is the airport's own code, 1 the city by its
+        whole name, 2 the city by its first letters, 3 the airport's name containing the
+        text. Within a rank the airport on more routes comes first."""
+        typed = fold(text)
+        if not typed:
+            return []
+        code = typed.upper()
+        ranked = []
+        for place, city, name, used in self._listed():
+            if code in (place.iata, place.icao or place.code):
+                rank = 0
+            elif city == typed:
+                rank = 1
+            elif len(typed) >= 3 and city.startswith(typed):
+                rank = 2
+            elif len(typed) >= 3 and typed in name:
+                rank = 3
+            else:
+                continue
+            ranked.append((rank, -used, place.name, place))
+        ranked.sort(key=lambda r: r[:3])
+        if ranked and ranked[0][0] == 0:  # a code was typed: a name that happens to hold
+            ranked = [r for r in ranked if r[0] < 3]  # those letters is not what was meant
+        return [(rank, place) for rank, _, _, place in ranked]
+
+    def find_airports(self, text: str, limit: int = 8) -> list[Airport]:
+        """The airports a passenger can mean by what they typed, best first: a three-letter
+        IATA or four-letter ICAO code that exists, then the city by its whole name, the city
+        by its first letters, and the airport's name containing the text. Accents and case
+        do not count. Only airports with an IATA code are listed: the ones a ticket names."""
+        return [place for _, place in self._ranked(text)[:limit]]
+
+    def best_airport(self, text: str) -> Airport | None:
+        """The one airport the text means, when there is no real choice: its own code, or
+        the only airport in the best rank that matched (the only one in a city of that name,
+        say). None when nothing matched or several airports are as good as each other."""
+        ranked = self._ranked(text)
+        if not ranked:
+            return None
+        top = [place for rank, place in ranked if rank == ranked[0][0]]
+        return top[0] if ranked[0][0] == 0 or len(top) == 1 else None
 
 
 def main(argv: list[str] | None = None) -> int:

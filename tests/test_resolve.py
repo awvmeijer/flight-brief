@@ -127,3 +127,66 @@ def test_vrs_wins_over_the_supplement_when_it_has_the_callsign(tmp_path: Path) -
     built = vrs.RouteTable(tmp_path / "t.sqlite")
     assert counts["routes"] == 1 and built.route("VTA956") == ["NTGJ", "NTAA"]
     assert "0 routes" in (built.meta("supplement_routes") or "")
+
+
+# --- flight numbers between two airports, and airports by name -----------------------------
+
+def test_flights_between_lists_every_number_on_the_pair_by_airline_then_number(
+        wide: vrs.RouteTable) -> None:
+    found = wide.flights_between("EHAM", "SBGR")
+    assert [(f.number, f.airline, f.callsign, f.leg) for f in found] == [
+        ("CV7", "Cargolux", "CLX7", 2),  # VHHH-EHAM-SBGR-EBLG: the pair is its second leg
+        ("KL791", "KLM", "KLM791", 1), ("KL793", "KLM", "KLM793", 1),
+        ("JJ8079", "TAM Brazilian Airlines", "TAM8079", 1),
+        ("TB9101", "TUI fly Belgium", "JAF9101", 1)]
+    # the other direction is another list, and stops that are not consecutive do not count:
+    # XYZ12 flies EHAM-EDDF-SBGR
+    assert [f.number for f in wide.flights_between("SBGR", "EHAM")] == ["KL792"]
+    assert "XYZ12" not in [f.callsign for f in found]
+    # an airline with no IATA code keeps its ICAO code
+    assert [f.number for f in wide.flights_between("eham", "eddf")] == ["KL1765", "XYZ12"]
+    assert wide.flights_between("EHAM", "WSSS") == []
+
+
+def test_flights_between_reads_the_slice_too(table: vrs.RouteTable) -> None:
+    assert [(f.number, f.leg) for f in table.flights_between("WSSS", "EGLL")] == [
+        ("BA12", 1), ("QF1", 2), ("SQ322", 1)]
+
+
+@pytest.mark.parametrize(("typed", "first", "rest"), [
+    ("amsterdam", "AMS", ["QSX"]),            # the city by its whole name before a name that holds it
+    ("AMS", "AMS", []), ("ams", "AMS", []), ("eham", "AMS", []),
+    ("sao paulo", "GRU", ["CGH", "SAO", "OLC"]),   # no accents typed; the busiest airport first
+    ("São Paulo", "GRU", ["CGH", "SAO", "OLC"]),
+    ("SÃO PAULO", "GRU", ["CGH", "SAO", "OLC"]),
+    ("liege", "LGG", []), ("frankfurt", "FRA", ["HHN"]), ("schiphol", "AMS", []),
+    ("guarulhos", "GRU", []), ("frankfurt am main", "FRA", []),
+    ("london", "LHR", ["LGW"]), ("LHR", "LHR", []), ("heathrow", "LHR", []),
+])
+def test_find_airports_matches_what_a_passenger_types(
+        wide: vrs.RouteTable, typed: str, first: str, rest: list[str]) -> None:
+    found = [a.iata for a in wide.find_airports(typed)]
+    assert found[0] == first and sorted(found[1:]) == sorted(rest)
+
+
+def test_find_airports_lists_only_airports_with_an_iata_code_and_keeps_to_the_limit(
+        wide: vrs.RouteTable) -> None:
+    assert all(a.iata for a in wide.find_airports("amsterdam"))  # not the heliport
+    assert "EHHA" not in [a.code for a in wide.find_airports("amsterdam")]
+    assert len(wide.find_airports("sao paulo", limit=2)) == 2
+    for nothing in ("", "  ", "zz", "xq", "qqqqqq", "-", "'"):
+        assert wide.find_airports(nothing) == []
+    # two letters are too few for a name, and enough only for a city's whole name
+    assert wide.find_airports("am") == []
+
+
+def test_best_airport_is_the_one_airport_when_there_is_no_real_choice(
+        wide: vrs.RouteTable) -> None:
+    def best(text: str) -> str | None:
+        found = wide.best_airport(text)
+        return found.iata if found else None
+
+    assert best("amsterdam") == "AMS"  # the only airport in a city of that name
+    assert best("GRU") == "GRU" and best("sbgr") == "GRU" and best("Frankfurt") == "FRA"
+    assert best("sao paulo") is None and best("london") is None  # several, as good as each other
+    assert best("nowhere at all") is None

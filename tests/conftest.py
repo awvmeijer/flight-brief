@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from flight_brief import vrs
+from vrs_helpers import EXTRA, EXTRA_ZONES
 
 FIXTURES = Path(__file__).parent / "fixtures"
 # Time zones for the airports in the VRS slice, as timezonefinder gives them.
@@ -25,12 +26,23 @@ def no_tile_downloads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 @pytest.fixture(scope="session")
 def table(tmp_path_factory: pytest.TempPathFactory) -> vrs.RouteTable:
     """The route table built from the committed VRS slice."""
-    out = tmp_path_factory.mktemp("vrs") / "vrs.sqlite"
-    files = list(vrs.from_folder(FIXTURES / "vrs"))
+    return _build(tmp_path_factory.mktemp("vrs") / "vrs.sqlite", [])
+
+
+@pytest.fixture(scope="session")
+def wide(tmp_path_factory: pytest.TempPathFactory) -> vrs.RouteTable:
+    """The same slice with the rows of `vrs_helpers.EXTRA` added: more airports, some with
+    accents, more routes, and the aircraft families the name tests ask about."""
+    return _build(tmp_path_factory.mktemp("vrs-wide") / "vrs.sqlite", EXTRA)
+
+
+def _build(out: Path, extra: list[tuple[str, str]]) -> vrs.RouteTable:
+    files = [*vrs.from_folder(FIXTURES / "vrs"), *extra]
+    zones = {**ZONES, **EXTRA_ZONES}
     codes = {}
     for kind, text in [*files, ("airports", vrs.EXTRA_AIRPORTS.read_text(encoding="utf-8"))]:
         if kind == "airports":
             for row in vrs._rows(text):
                 codes[(float(row["Latitude"]), float(row["Longitude"]))] = row["Code"]
-    vrs.build(files, out, lambda lat, lon: ZONES.get(codes[(lat, lon)]) or ZONES[codes[(lat, lon)][:2]])
+    vrs.build(files, out, lambda lat, lon: zones.get(codes[(lat, lon)]) or zones[codes[(lat, lon)][:2]])
     return vrs.RouteTable(out)

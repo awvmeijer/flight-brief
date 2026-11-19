@@ -4,7 +4,8 @@ The order is the design's: normalise the code, map the airline through VRS `airl
 (one IATA code can mean several airlines), look the callsign up in the VRS route table, and
 otherwise say "could not map" so the user types the two airports. No rule turns a flight
 number into an ATC callsign, so "could not map" is a normal answer, common on European
-short-haul. The route table has no times: the user always types the departure time.
+short-haul. The route table has no times: the user types the departure time, unless a
+schedule (`schedule.py`) is there to give it.
 """
 
 import re
