@@ -658,7 +658,10 @@ def test_headers_keep_the_page_closed_and_unindexed(table: vrs.RouteTable) -> No
             policy(headers)
             assert headers["X-Content-Type-Options"] == "nosniff"
             assert headers["X-Frame-Options"] == "DENY"
-            assert headers["Referrer-Policy"] == "no-referrer"
+            # with a map the origin may be sent (a token limited to certain sites is checked
+            # against it), and never more than the origin; without one, nothing is sent
+            assert headers["Referrer-Policy"] == ("strict-origin" if token else "no-referrer")
+            assert 'name="referrer"' not in body
             assert int(headers["Content-Length"]) == len(body.encode())
             # no script and no style written into the page; its styles and scripts are this
             # app's own files, and Mapbox's only on a brief with a route when a token is set

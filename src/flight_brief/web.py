@@ -89,7 +89,6 @@ SECURITY = [
      "frame-ancestors 'none'"),
     ("X-Content-Type-Options", "nosniff"),
     ("X-Frame-Options", "DENY"),
-    ("Referrer-Policy", "no-referrer"),
     ("Cross-Origin-Opener-Policy", "same-origin"),
     ("Cross-Origin-Resource-Policy", "same-origin"),
     ("Permissions-Policy", "geolocation=(), camera=(), microphone=(), interest-cohort=()"),
@@ -282,6 +281,9 @@ def create_app(table: RouteTable, *, snapshots: Path | None, cache: Path, saved:
     `mapbox` is a public Mapbox token for the route map; without one the map window says so."""
     limiter = RateLimit(limit, window, clock)
     files = static_files()
+    # A Mapbox token limited to certain sites is checked against the page's origin, so with a
+    # map the browser may send the origin, and only the origin: never the flight's address.
+    referrer = ("Referrer-Policy", "strict-origin" if mapbox else "no-referrer")
     quiet = (NOINDEX, ("Cache-Control", "no-store"))
 
     def home(values: dict[str, str] | None = None, **kw: Any) -> str:
@@ -552,7 +554,7 @@ def create_app(table: RouteTable, *, snapshots: Path | None, cache: Path, saved:
         status, headers, body = respond(environ)
         data = body if isinstance(body, bytes) else body.encode("utf-8")
         start_response(f"{status} {REASONS[status]}",
-                       [*headers, *SECURITY, ("Content-Length", str(len(data)))])
+                       [*headers, *SECURITY, referrer, ("Content-Length", str(len(data)))])
         return [] if environ.get("REQUEST_METHOD") == "HEAD" else [data]
 
     return app

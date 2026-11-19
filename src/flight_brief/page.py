@@ -260,7 +260,7 @@ def layout(title: str, body: str, *, noindex: bool = False, mapbox: bool = False
     return (
         '<!doctype html>\n<html lang="en" data-theme="dark">\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        f'{robots}<meta name="referrer" content="no-referrer">\n'
+        f'{robots}'
         '<meta name="color-scheme" content="dark">\n'
         f'<title>{e(title)}</title>\n<link rel="icon" href="data:,">\n'
         f'<link rel="stylesheet" href="/static/straat/straat.css?v={ASSETS}">\n'
