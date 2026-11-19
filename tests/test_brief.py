@@ -1,3 +1,4 @@
+import re
 """The Phase 1 items of the design's Verification section that need no forecast layer."""
 
 import json
@@ -21,6 +22,7 @@ from brief_helpers import (
     store,
     unquoted,
     utc,
+    without_ride,
 )
 from flight_brief import vrs
 from flight_brief.brief import DEPARTED, NOT_OPS, TOO_FAR_H, defaults, make_flight, to_utc
@@ -301,16 +303,24 @@ def every_brief(table: vrs.RouteTable, tmp_path: Path):  # type: ignore[no-untyp
                 root=store(tmp_path / "rough", at, sigmet=[rough]))
 
 
-def test_severity_words_appear_only_inside_quoted_official_text(
+def test_strength_words_stand_only_in_quoted_official_text_and_in_the_plain_answer(
         table: vrs.RouteTable, tmp_path: Path) -> None:
-    quoted_some = False
+    quoted_some = answered_some = False
     for b in every_brief(table, tmp_path):
         text = render(b)
-        assert not SEVERITY.search(unquoted(text)), SEVERITY.search(unquoted(text))
+        rest = unquoted(without_ride(text))
+        assert not SEVERITY.search(rest), SEVERITY.search(rest)
         for own in own_strings(b.record()):
             assert not SEVERITY.search(own), own
         quoted_some = quoted_some or bool(SEVERITY.search(text))
+        if b.ride is not None:
+            for sentence in b.ride.answer:
+                if re.search(r"\b(smooth|light|moderate|severe)\b", sentence, re.IGNORECASE):
+                    answered_some = True     # a strength word always names its source
+                    assert re.search(r"\((official warning|NOAA forecast|estimate)"
+                                     r"( and (NOAA forecast|estimate))*\)", sentence), sentence
     assert quoted_some  # the fixtures do carry such words, so the check has something to catch
+    assert answered_some
 
 
 def test_every_page_says_not_for_flight_operations_and_never_safe_or_a_score(

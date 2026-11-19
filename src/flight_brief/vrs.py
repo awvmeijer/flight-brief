@@ -7,7 +7,8 @@ one column the source does not have, each airport's time zone, worked out once a
 so that a brief needs only the standard library to turn a local departure time into UTC.
 Airports VRS lacks come from a small supplement file, `data/airports_extra.csv` (OurAirports,
 public domain), and routes it lacks from `data/routes_extra.csv` (single facts typed by hand).
-Both grow one row at a time, when a real lookup fails.
+Both grow one row at a time, when a real lookup fails. Runway directions, one row per runway
+end, come from OurAirports `runways.csv` (public domain), for the airports the table has.
 
 Build it with `python -m flight_brief.vrs --out data/vrs.sqlite` (needs the `routes` extra
 for timezonefinder, whose boundary data is from timezone-boundary-builder, ODbL).
@@ -36,6 +37,10 @@ EXTRA_AIRPORTS = Path(__file__).parent / "data" / "airports_extra.csv"
 SUPPLEMENT = "OurAirports, public domain (The Unlicense)"
 # Routes VRS does not have, in VRS's route columns: single facts typed by hand.
 EXTRA_ROUTES = Path(__file__).parent / "data" / "routes_extra.csv"
+# Runway ends with their true headings: OurAirports `runways.csv`, read whole at build time.
+RUNWAYS = "https://davidmegginson.github.io/ourairports-data/runways.csv"
+RUNWAYS_LICENCE = "OurAirports runways, public domain (The Unlicense)"
+RUNWAY_IDENT = re.compile(r"(\d{1,2})[LRC]?$")
 MEMBER = re.compile(r"(?:^|/)(airlines|routes|airports|model-type)/schema-01/(?:.*/)?[^/]+\.csv$")
 TzOf = Callable[[float, float], str | None]
 AIRPORT_KEYS = ("code", "name", "icao", "iata", "location", "country", "lat", "lon", "tz")
@@ -46,10 +51,12 @@ CREATE TABLE routes (callsign TEXT PRIMARY KEY, airline TEXT, number TEXT, airpo
 CREATE TABLE airports (code TEXT PRIMARY KEY, name TEXT, icao TEXT, iata TEXT, location TEXT,
                        country TEXT, lat REAL, lon REAL, tz TEXT);
 CREATE TABLE model_types (icao TEXT PRIMARY KEY, engine TEXT, species TEXT);
+CREATE TABLE runways (airport TEXT, ident TEXT, heading REAL, length_ft INTEGER);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE INDEX airlines_iata ON airlines (iata);
 CREATE INDEX airlines_icao ON airlines (icao);
 CREATE INDEX airports_iata ON airports (iata);
+CREATE INDEX runways_airport ON runways (airport);
 """
 
 
@@ -70,6 +77,13 @@ class Airport(BaseModel):
     lat: float
     lon: float
     tz: str | None  # IANA zone name; None when the build could not place the airport
+
+
+class Runway(BaseModel):
+    """One end of a runway: the direction an aircraft points when it uses that end."""
+    ident: str  # 09, 27L
+    heading: float  # degrees true
+    length_ft: int | None
 
 
 class RouteFlight(BaseModel):
@@ -109,9 +123,33 @@ def from_archive(stream: io.BufferedIOBase) -> Iterator[tuple[str, str]]:
                     yield match.group(1), data.read().decode("utf-8")
 
 
+def runway_ends(text: str) -> Iterator[tuple[str, str, float, int | None]]:
+    """(airport, ident, heading in degrees true, length in feet) for each end of every open
+    runway in an OurAirports `runways.csv`. An end without a heading takes ten times its
+    number (09L is 90) when its name is a runway number, and is left out otherwise."""
+    for r in _rows(text):
+        if (r.get("closed") or "").strip() == "1" or not (r.get("airport_ident") or "").strip():
+            continue
+        length = (r.get("length_ft") or "").strip()
+        for end in ("le", "he"):
+            ident = (r.get(f"{end}_ident") or "").strip().upper()
+            stated = (r.get(f"{end}_heading_degT") or "").strip()
+            number = RUNWAY_IDENT.fullmatch(ident)
+            try:
+                heading = float(stated)
+            except ValueError:
+                if not number or not 1 <= int(number[1]) <= 36:
+                    continue
+                heading = int(number[1]) * 10.0
+            if ident:
+                yield (r["airport_ident"].strip().upper(), ident, heading % 360.0,
+                       int(float(length)) if length else None)
+
+
 def build(files: Iterable[tuple[str, str]], out: Path, tz_of: TzOf,
-          now: datetime | None = None) -> dict[str, int]:
-    """Write the table to `out`, replacing any file there. Returns the row counts."""
+          now: datetime | None = None, runways: str | None = None) -> dict[str, int]:
+    """Write the table to `out`, replacing any file there. Returns the row counts. `runways`
+    is the text of an OurAirports `runways.csv`; without it the runways table stays empty."""
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")
     tmp.unlink(missing_ok=True)
@@ -142,6 +180,10 @@ def build(files: Iterable[tuple[str, str]], out: Path, tz_of: TzOf,
         db.execute("INSERT OR IGNORE INTO routes VALUES (?,?,?,?)",
                    (r["Callsign"], r["AirlineCode"], r["Number"], r["AirportCodes"]))
     routes = db.total_changes - before
+    # Runways only for the airports in the table: the rest of the file is never asked about.
+    known = {code for (code,) in db.execute("SELECT code FROM airports")}
+    ends = [e for e in runway_ends(runways or "") if e[0] in known]
+    db.executemany("INSERT INTO runways VALUES (?,?,?,?)", ends)
     built = (now or datetime.now(UTC)).isoformat(timespec="seconds")
     db.executemany("INSERT INTO meta VALUES (?,?)",
                    [("built_at", built), ("source", ARCHIVE), ("licence", LICENCE),
@@ -149,9 +191,12 @@ def build(files: Iterable[tuple[str, str]], out: Path, tz_of: TzOf,
                                    "that VRS does not have"),
                     ("supplement_routes", f"typed by hand from airline schedules: {routes} "
                                           f"route{'s' if routes != 1 else ''} that VRS does "
-                                          "not have")])
+                                          "not have"),
+                    ("runways", f"{RUNWAYS_LICENCE}: {len(ends)} runway "
+                                f"end{'s' if len(ends) != 1 else ''}"),
+                    ("runways_source", RUNWAYS if runways is not None else "")])
     counts = {t: db.execute(f"SELECT count(*) FROM {t}").fetchone()[0]  # noqa: S608
-              for t in ("airlines", "routes", "airports")}
+              for t in ("airlines", "routes", "airports", "runways")}
     db.commit()
     db.close()
     tmp.replace(out)
@@ -220,6 +265,17 @@ class RouteTable:
                                    "WHERE icao LIKE ? ORDER BY icao", (like,)).fetchall()
         except sqlite3.OperationalError:
             return []
+
+    def runways(self, icao: str) -> list[Runway]:
+        """Every runway end of an airport, by its ICAO code, longest first. Empty when the
+        airport has none listed, and when the table was built before it carried runways."""
+        if not self.db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                               "AND name = 'runways'").fetchone():
+            return []
+        rows = self.db.execute(
+            "SELECT ident, heading, length_ft FROM runways WHERE airport = ? "
+            "ORDER BY length_ft DESC, ident", (icao.upper(),)).fetchall()
+        return [Runway(ident=i, heading=h, length_ft=n) for i, h, n in rows]
 
     def airport(self, code: str) -> Airport | None:
         """An airport by ICAO code (four characters) or IATA code (three)."""
@@ -323,6 +379,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=Path("data/vrs.sqlite"))
     parser.add_argument("--from-folder", type=Path,
                         help="a local checkout of the VRS repository, instead of downloading it")
+    parser.add_argument("--runways", type=Path,
+                        help="a local copy of OurAirports runways.csv, instead of downloading it")
     args = parser.parse_args(argv)
     try:
         from timezonefinder import TimezoneFinder
@@ -333,12 +391,18 @@ def main(argv: list[str] | None = None) -> int:
     def tz_of(lat: float, lon: float) -> str | None:
         return finder.timezone_at(lat=lat, lng=lon)
 
+    if args.runways:
+        runways = args.runways.read_text(encoding="utf-8")
+    else:
+        asked = urllib.request.Request(RUNWAYS, headers={"User-Agent": USER_AGENT})  # noqa: S310
+        with urllib.request.urlopen(asked, timeout=60) as resp:  # noqa: S310
+            runways = resp.read().decode("utf-8")
     if args.from_folder:
-        counts = build(from_folder(args.from_folder), args.out, tz_of)
+        counts = build(from_folder(args.from_folder), args.out, tz_of, runways=runways)
     else:
         request = urllib.request.Request(ARCHIVE, headers={"User-Agent": USER_AGENT})  # noqa: S310
         with urllib.request.urlopen(request, timeout=60) as resp:  # noqa: S310
-            counts = build(from_archive(resp), args.out, tz_of)
+            counts = build(from_archive(resp), args.out, tz_of, runways=runways)
     print(f"{args.out}: {counts}")
     return 0
 

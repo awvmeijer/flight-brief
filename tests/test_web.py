@@ -131,6 +131,13 @@ def own_text(html: str) -> str:
     return re.sub(r'<q class="quoted[^"]*">.*?</q>', "", html, flags=re.DOTALL)
 
 
+def outside_the_answer(html: str) -> str:
+    """The page without what `ride.py` wrote: the windows of kind "ride" (they hold no other
+    window) and any element marked `data-ride`."""
+    html = re.sub(r'<section class="st-win ride">.*?</section>', "", html, flags=re.DOTALL)
+    return re.sub(r"<(\w+) data-ride>.*?</\1>", "", html, flags=re.DOTALL)
+
+
 def sealed(html: str) -> Reader:
     """The page runs and styles nothing written into it. Every script is a file of this
     app's or Mapbox's, or is a block of JSON data; there is no style element, no style
@@ -383,8 +390,12 @@ def test_the_map_draws_each_hour_of_the_route_and_both_airports(table: vrs.Route
     b = brief(table, "UA837", "2026-11-02", "17:40", "2026-11-03T01:00", root=STORE)
     data = page.map_data(b)
     hours = data["hours"]
-    # one stretch for each hour, numbered, in the hour's own state
-    assert [(h["label"], h["state"]) for h in hours] == [(f"{h.index:02d}", h.state)
+    # one stretch for each hour, numbered; the line follows the plain answer: amber where
+    # it says moderate or more, dashed where it is not known
+    def drawn(h):
+        return ("too_early" if h.ride_level is None else "flagged" if h.ride_level >= 2
+                else "nothing_found")
+    assert [(h["label"], h["state"]) for h in hours] == [(f"{h.index:02d}", drawn(h))
                                                          for h in b.hours]
     assert len({h["state"] for h in hours}) > 1 and set(data) == {"hours", "airports"}
     # points are [longitude, latitude], the order Mapbox reads
@@ -927,7 +938,9 @@ def test_no_verdict_and_no_severity_word_outside_quoted_text(table: vrs.RouteTab
         rest = own_text(html)
         assert 'id="fb-loading"' in rest and "Reading the sky along your route" in rest, name
         assert '<svg class="hud"' in rest and "aria-label=" in rest, name
-        assert not SEVERITY.search(rest), (name, SEVERITY.search(rest))
+        # a strength word stands only in quoted text and in the plain answer
+        outside = outside_the_answer(rest)
+        assert not SEVERITY.search(outside), (name, SEVERITY.search(outside))
         assert not VERDICT.search(rest), (name, VERDICT.search(rest))
         assert NOT_OPS in rest, name
     assert 'aria-label="Initial track ' in own_text(pages["AA273"])
@@ -1430,7 +1443,9 @@ def test_the_new_pages_keep_the_wording_rules_and_every_header(
     for name, html in pages.items():
         read(html)
         rest = own_text(html)
-        assert not SEVERITY.search(rest), (name, SEVERITY.search(rest))
+        # a strength word stands only in quoted text and in the plain answer
+        outside = outside_the_answer(rest)
+        assert not SEVERITY.search(outside), (name, SEVERITY.search(outside))
         assert not VERDICT.search(rest), (name, VERDICT.search(rest))
         assert NOT_OPS in rest, name
         sealed(html)

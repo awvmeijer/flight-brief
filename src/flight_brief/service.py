@@ -105,6 +105,8 @@ def request_brief(req: BriefRequest, table: RouteTable, root: Path, as_of: datet
             fetch(root, leg, flight, as_of)
         return make_brief(found.code, leg, day, departure, as_of, root, callsign=callsign,
                           cruise_fl=req.fl, groundspeed_kt=req.gs, arrival=arrival,
-                          aircraft=aircraft, tiles=tiles, noted=noted)
+                          aircraft=aircraft, tiles=tiles, noted=noted,
+                          runways={a.code: table.runways(a.code)
+                                   for a in (leg.origin, leg.destination)})
     except ValueError as exc:
         return Problem(status="invalid", message=str(exc))

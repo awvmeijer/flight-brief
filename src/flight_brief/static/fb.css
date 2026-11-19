@@ -307,3 +307,44 @@ dl.src li, .fb-words li { padding: 4px 0; color: var(--st-body); }
 .fb-more { color: var(--st-body); margin: 0 0 16px; }
 .fb-sum + .fb-cells { margin-top: 14px; }
 .fb p + .fb-choices { margin-top: 12px; }
+
+/* ---- the ride: the plain answer. One bar per ten minutes, grouped by flight hour. Bar height
+   carries the level, so it never rests on colour alone; a dashed bar is an estimate. ---- */
+.fb-answer { list-style: none; margin: 0 0 16px; padding: 0; color: var(--st-body); display: grid; gap: 2px; }
+.fb-ride { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 14px 6px; align-items: start;
+  grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); }
+.fb-rh { display: grid; gap: 3px; justify-items: start; min-width: 0; }
+.fb-rh .bars { display: flex; align-items: flex-end; gap: 2px; height: 72px; width: 100%; padding-top: 10px;
+  box-sizing: border-box; border-bottom: 1px solid var(--st-line-strong); }
+.fb-rh .bars i, .fb-words4 dt i { flex: 1; min-width: 0; display: block; box-sizing: border-box; position: relative; }
+.fb-rh .w { font: 500 12px/1.1 var(--st-sans); color: var(--st-ink); overflow-wrap: anywhere; }
+.fb-rh .w.r2, .fb-rh .w.r3 { color: var(--st-warn); }
+.fb-rh .w.rq { color: var(--st-muted); }
+.fb-rh .t, .fb-rh .wd { font-size: 9px; letter-spacing: .06em; }
+.fb-rh .t.storm { color: var(--st-ink); }
+i.r0 { height: 10%; } i.r1 { height: 40%; } i.r2 { height: 70%; } i.r3 { height: 100%; }
+i.r0.off, i.r1.off { background: var(--st-accent); }
+i.r2.off { background: var(--st-warn); }
+i.r3.off { background: var(--st-warn); box-shadow: 0 0 0 1px var(--st-warn), 0 0 10px rgba(232, 150, 44, .5); }
+i.r0.est, i.r1.est { border-top: 1px dashed var(--st-accent); background: rgba(57, 255, 20, .22); }
+i.r2.est { border-top: 1px dashed var(--st-warn); background: rgba(232, 150, 44, .26); }
+i.rq { height: 100%; border-top: 1px dashed var(--st-line-strong); background: repeating-linear-gradient(135deg, transparent 0 4px, var(--st-line) 4px 5px); }
+.fb-rh .bars i.storm::before { content: ""; position: absolute; left: 50%; top: -9px; width: 5px; height: 5px;
+  margin-left: -3px; background: var(--st-ink); transform: rotate(45deg); }
+.fb-words4 { margin: 18px 0 0; display: grid; gap: 10px 28px; }
+.fb-words4 div { display: grid; grid-template-columns: 96px 1fr; gap: 10px; align-items: start; }
+.fb-words4 dt { display: flex; align-items: flex-end; gap: 8px; height: 20px; font: 500 14px var(--st-sans); color: var(--st-ink); }
+.fb-words4 dt i { flex: none; width: 8px; }
+.fb-words4 dd { margin: 0; color: var(--st-body); font-size: 13px; }
+.fb-evidence { margin-top: 28px; border-top: 1px solid var(--st-line); }
+.fb-evidence > summary { cursor: pointer; padding: 16px 0; display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 4px 14px; list-style: none; }
+.fb-evidence > summary::-webkit-details-marker { display: none; }
+.fb-evidence > summary b { font: 500 16px var(--st-sans); color: var(--st-accent-ink); }
+.fb-evidence > summary b::before { content: "+ "; font-family: var(--st-mono); }
+.fb-evidence[open] > summary b::before { content: "\2212  "; }
+.fb-evidence > summary:focus-visible { outline: 1px solid var(--st-accent); outline-offset: 4px; }
+@media (min-width: 810px) {
+  .fb-words4 { grid-template-columns: 1fr 1fr; }
+  .fb-ride { grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); }
+}

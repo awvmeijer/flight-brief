@@ -23,7 +23,9 @@ Two departures from STRAAT, both decided by Anthony:
 
 ## Principles
 
-1. **Sources, not a verdict.** Each source has its own lane. Nothing on the page adds them up.
+1. **The answer first, the sources behind it.** The first window says how the ride is
+   expected to be, in four words, and each word names its source. Each source keeps its own
+   lane under "Show the evidence". There is still no score for a flight.
 2. **Not knowing is drawn as carefully as knowing.** "Too early", "not covered" and "stale" have
    their own marks and their own window. They are never hidden and never amber: not knowing is
    not a warning.
@@ -32,9 +34,10 @@ Two departures from STRAAT, both decided by Anthony:
 4. **The HUD is drawn with data.** A tape shows this flight's speed or level; the heading tape
    shows this route's track. No symbol is decoration.
 5. **State is never colour alone.** Every state has a symbol and a word.
-6. **The page's own words carry no severity.** No "light", "moderate" or "severe", no "safe" or
-   "unsafe", no score. An official source's text appears only as a quotation, in mono, behind a
-   green rule.
+6. **A strength word always has a source.** Smooth, light, moderate and severe are written
+   only by `ride.py`: from an official warning, from NOAA's forecast, or as an estimate that
+   is drawn and labelled as one. Never "safe" or "unsafe", never a score. An official source's
+   text appears only as a quotation, in mono, behind a green rule.
 
 ## Colour
 
@@ -75,7 +78,32 @@ the wordmark's die, and nowhere else.
 | not covered | – | dotted hairline, muted | the source never covers this place |
 | stale | ! | dashed amber | the source's data is older than its limit |
 
+## The ride: four levels
+
+| word | bar | colour | may come from |
+|---|---|---|---|
+| smooth | a tenth of the height | green | forecast, estimate |
+| light | two fifths | green | forecast, estimate |
+| moderate | seven tenths | amber | warning, forecast, estimate |
+| severe | full height, glowing | amber | warning, forecast |
+| not known yet | full height, hatched | hairline | no source reaches the stretch |
+
+The height carries the level, so it never rests on colour. A solid bar is official (a warning
+in force, or NOAA's forecast). A faint bar with a dashed top is the estimate. A small white
+diamond over a bar marks a storm: a thunderstorm warning, or storm clouds forecast near
+cruise level. No red: severe is amber at full height.
+
 ## Components
+
+- **The ride** (first window of a brief): the headline sentence, the other sentences (storms,
+  wind, what is not known), one bar per ten minutes grouped by flight hour with the hour's
+  word and its source under it, the key, and what each of the four words means for a
+  passenger.
+- **Show the evidence:** one fold, closed until asked, that holds how the words were chosen,
+  the hour cells, the lanes, the sources' own words, assumptions and licences. It opens
+  without JavaScript.
+- **World map** (`/map`): the estimate worldwide and forecast storm clouds, with a time step
+  and three cruise levels.
 
 - **Window** (`st-win`): bar with a die (green when its data is live, hollow when it holds only
   unknowns, amber when it holds a flag), a title and a count; body; foot with provenance. Green
@@ -95,8 +123,8 @@ the wordmark's die, and nowhere else.
 - **Search:** two windows. Route and date first; flight number second. Suggestions drop from
   the field.
 - **Route map:** Mapbox, style `navigation-night-v1`, globe projection, fog as on the 3DREAMS
-  landing page. The route is a green line; flagged hours are amber and wider; hour numbers at
-  each hour's midpoint. Needs `MAPBOX_TOKEN`; without it the window says so.
+  landing page. The route is a green line; hours the answer calls moderate or severe are
+  amber and wider; hours not known yet are dashed; hour numbers at each hour's midpoint. Needs `MAPBOX_TOKEN`; without it the window says so.
 - **Loading:** a quadcopter drawn in HUD lines holds its course while the horizon rolls and
   streaks pass. Under it, the kinds of source being read. It does not show which one is
   done, because one request reads them all. It is shown only while a brief is being made.

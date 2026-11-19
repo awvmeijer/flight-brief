@@ -28,7 +28,7 @@ from .service import Problem
 from .vrs import Airport, RouteFlight
 
 SITE = "Flight Brief"
-ASSETS = "3"  # bump when a file under static/ changes, so browsers fetch it again
+ASSETS = "6"  # bump when a file under static/ changes, so browsers fetch it again
 MAPBOX_GL = "https://api.mapbox.com/mapbox-gl-js/v3.33.0"
 STATE_WORDS = {"flagged": "flagged", "nothing_found": "nothing found", "too_early": "too early",
                "not_covered": "not covered", "stale": "source stale",
@@ -112,7 +112,9 @@ def cap(text: str) -> str:
 
 def win(title: str, meta: str, body: str, *, foot: str = "", die: str = "",
         kind: str = "") -> str:
-    """A window: bar (die, title, meta), body, foot. `die` is "", "off" or "warn"."""
+    """A window: bar (die, title, meta), body, foot. `die` is "", "off" or "warn". The kind
+    "ride" marks a window whose words `ride.py` wrote: the only windows, with any element
+    carrying `data-ride`, where a strength word stands outside a quotation."""
     tail = f'<div class="st-win-foot">{foot}</div>' if foot else ""
     return (f'<section class="st-win{" " + kind if kind else ""}"><div class="st-win-bar">'
             f'<i class="die{" " + die if die else ""}"></i><b>{e(title)}</b>'
@@ -268,7 +270,7 @@ def layout(title: str, body: str, *, noindex: bool = False, mapbox: bool = False
         f'<script src="/static/app.js?v={ASSETS}" defer></script>\n{extra_js}'
         '</head>\n<body class="fb st-night st-grid">\n<div class="fb-wrap">\n'
         '<header class="fb-top"><a class="fb-word" href="/">flight brief<i></i></a>'
-        '<nav class="fb-nav"><a href="/">Another flight</a></nav></header>\n'
+        '<nav class="fb-nav"><a href="/map">World map</a><a href="/">Another flight</a></nav></header>\n'
         f'<main>\n{body}\n</main>\n'
         f'<footer class="fb-foot"><span><b>{e(NOT_OPS)}.</b> Weather for passengers, read from '
         'public sources; each page lists them.</span>'
@@ -635,6 +637,74 @@ def _own_words(brief: Brief) -> str:
                + "\n</ul>")
 
 
+RIDE_SOURCE = {"warning": "official warning", "forecast": "NOAA forecast", "estimate": "estimate"}
+STORM_WORDS = {"warning": "thunderstorm warning in force", "forecast": "storm clouds forecast"}
+
+
+def _ride_bar(x: Any) -> str:
+    cls = "rq" if x.level is None else f"r{x.level} {'est' if x.source == 'estimate' else 'off'}"
+    return f'<i class="{cls}{" storm" if x.storm else ""}"></i>'
+
+
+def _ride(brief: Brief) -> str:
+    """The plain answer: the sentences `ride.py` wrote, one bar per ten minutes grouped by
+    flight hour, and what each word means. Every strength word here comes from the brief's
+    `ride` block."""
+    r = brief.ride
+    assert r is not None
+    f = brief.flight
+    lines = [*r.answer[1:], *([r.wind_text] if r.wind_text else [])]
+    more = ('<ul class="fb-answer">' + "".join(f"<li>{e(x)}</li>" for x in lines) + "</ul>\n"
+            if lines else "")
+    groups = []
+    for h in brief.hours:
+        mine = [x for x in r.slots if x.hour == h.index]
+        word = h.ride_word or "not known yet"
+        said = word + (f" ({RIDE_SOURCE[h.ride_source]})" if h.ride_source else "")
+        if h.storm:
+            said += f", {STORM_WORDS[h.storm]}"
+        wind = ""
+        if h.wind_kt is not None and abs(h.wind_kt) >= 10:
+            wind = (f'<span class="wd cap">{"tail" if h.wind_kt > 0 else "head"} '
+                    f"{abs(round(h.wind_kt / 5) * 5):.0f}</span>")
+        level = "rq" if h.ride_level is None else f"r{h.ride_level}"
+        groups.append(
+            f'<li class="fb-rh" title="Hour {h.index}: {e(said)}">'
+            f'<span class="n cap">{h.index:02d}</span>'
+            f'<span class="bars" aria-hidden="true">{"".join(_ride_bar(x) for x in mine)}</span>'
+            f'<span class="vh">hour {h.index}: {e(said)}</span>'
+            f'<b class="w {level}" aria-hidden="true">{e(h.ride_word or "?")}</b>'
+            + (f'<span class="t cap" aria-hidden="true">{h.ride_source}</span>'
+               if h.ride_source else "")
+            + ('<span class="t cap storm" aria-hidden="true">storm</span>' if h.storm else "")
+            + wind + "</li>")
+    words = "".join(
+        f'<div><dt><i class="r{q} off" aria-hidden="true"></i>{e(w)}</dt>'
+        f"<dd>{e(r.meanings[w])}</dd></div>" for q, w in enumerate(r.meanings))
+    body = (f'<p class="fb-sum summary">{e(r.answer[0])}</p>\n{more}'
+            f'<ol class="fb-ride" aria-label="The ride, hour by hour">{"".join(groups)}</ol>\n'
+            f'<div class="fb-axis cap"><span>{e(hhmm(f.takeoff_utc))} take-off</span>'
+            f"<span>{e(hhmm(f.landing_utc))} landing</span></div>\n"
+            f'<p class="fb-small">{e(r.key)}</p>\n'
+            f'<dl class="fb-words4">{words}</dl>')
+    worst = max((x.level for x in r.slots if x.level is not None), default=None)
+    storms = any(x.storm for x in r.slots)
+    die = "off" if worst is None else "warn" if worst >= 2 or storms else ""
+    size = (f"for a {r.weight_class} aircraft" if not r.weight_assumed
+            else "for a medium-size airliner")
+    return win("The ride", f"{len(brief.hours)} hours {DOT} ten minutes a bar", body, die=die,
+               foot=f"<span>Words {size}</span><span>Not for flight operations</span>",
+               kind="ride")
+
+
+def _basis(brief: Brief) -> str:
+    r = brief.ride
+    assert r is not None
+    return win("How the words are chosen", "sources and limits",
+               '<ul class="fb-assume">' + "".join(f"<li>{e(x)}</li>" for x in r.basis) + "</ul>",
+               kind="ride")
+
+
 def _unknown(brief: Brief) -> str:
     """What the brief cannot know, gathered from every source line and airport line that is
     too early, not covered or stale, plus the two things no brief knows."""
@@ -701,6 +771,9 @@ def _airports(brief: Brief) -> str:
             raw = quoted(line.quoted, raw=True) if line.quoted else ""
             tone = "" if line.state == "ok" else ' class="unknown"'
             rows.append(f'<dt class="cap">{name}</dt>\n<dd{tone}>{own(line.text)}{raw}</dd>')
+        cross = getattr(a, "crosswind", None)
+        if cross is not None:
+            rows.append(f'<dt class="cap">Crosswind</dt>\n<dd>{own(cross.text)}</dd>')
         known = a.taf.state == "ok" or a.metar.state == "ok"
         out.append(win(label, hhmm(a.at),
                        f'<div class="fb-apt"><h2>{e(place.location)} <code>{e(a.code)}</code></h2>'
@@ -793,30 +866,44 @@ def brief_body(brief: Brief, mapbox: str | None = None) -> str:
                 f'{_strip(brief)}\n'
                 f'<p class="fb-small">In the air about {e(hhmm(f.takeoff_utc))} to '
                 f"{e(hhmm(f.landing_utc))} {DOT} hour 1 starts at take-off</p>")
-    out.append('<div class="fb-cols">\n'
-               + win("The flight, hour by hour", f"{len(brief.hours)} hours {DOT} {flagged} flagged",
-                     headline, die="warn" if flagged else "")
-               + "\n" + route_map(brief, mapbox) + "\n</div>")
+    by_hour = win("Each source, hour by hour", f"{len(brief.hours)} hours {DOT} {flagged} flagged",
+                  headline, die="warn" if flagged else "")
     keys = _source_keys(brief.hours)
-    out.append(win("What each source says", f"{len(keys)} sources",
-                   f'<div class="fb-lanes"><div>{_lanes(brief)}</div>{_rates(brief)}</div>\n'
-                   f"{_sources(brief)}"))
-    out.append(_own_words(brief))
-    out.append(_unknown(brief))
-    out.append(_near(brief))
-    out.append(_airports(brief))
-    if brief.warnings_without_area:
-        out.append(f'<p class="fb-note">{len(brief.warnings_without_area)} warning(s) worldwide '
-                   "came without an area and could not be placed on the route (listed in the "
-                   "record)</p>")
+    lanes = win("What each source says", f"{len(keys)} sources",
+                f'<div class="fb-lanes"><div>{_lanes(brief)}</div>{_rates(brief)}</div>\n'
+                f"{_sources(brief)}")
     notes = [*brief.notes, *[p.note for p in brief.provenance if p.stale and p.note]]
     body = ("<h2 class=\"cap\">Assumptions</h2>\n<ul class=\"fb-assume\">"
             + "".join(f"<li>{own(a)}</li>" for a in f.assumptions) + "</ul>")
     if notes:
         body += ("\n<h2 class=\"cap\">Notes</h2>\n<ul class=\"fb-assume\">"
                  + "".join(f"<li>{own(n)}</li>" for n in notes) + "</ul>")
-    out.append(win("Assumptions and notes", f"{len(f.assumptions)} assumed", body))
-    out.append(_provenance(brief))
+    assumed = win("Assumptions and notes", f"{len(f.assumptions)} assumed", body)
+    without_area = (
+        f'<p class="fb-note">{len(brief.warnings_without_area)} warning(s) worldwide '
+        "came without an area and could not be placed on the route (listed in the "
+        "record)</p>" if brief.warnings_without_area else "")
+    if brief.ride is None:
+        # A record saved before the plain answer existed: the page as it was then.
+        out.append('<div class="fb-cols">\n' + by_hour + "\n" + route_map(brief, mapbox)
+                   + "\n</div>")
+        out += [lanes, _own_words(brief), _unknown(brief), _near(brief), _airports(brief),
+                without_area, assumed, _provenance(brief)]
+        return "\n".join(part for part in out if part)
+
+    out.append('<div class="fb-cols">\n' + _ride(brief) + "\n" + route_map(brief, mapbox)
+               + "\n</div>")
+    out.append(_unknown(brief))
+    if brief.near_airports:
+        out.append(_near(brief))
+    out.append(_airports(brief))
+    evidence = [_basis(brief), by_hour, lanes, _own_words(brief),
+                "" if brief.near_airports else _near(brief), without_area, assumed,
+                _provenance(brief)]
+    out.append('<details class="fb-evidence">\n<summary><b>Show the evidence</b>'
+               f'<span class="cap">{len(keys)} sources {DOT} what each one says, hour by hour'
+               "</span></summary>\n" + "\n".join(part for part in evidence if part)
+               + "\n</details>")
     return "\n".join(part for part in out if part)
 
 
@@ -890,7 +977,11 @@ def map_data(brief: Brief) -> dict[str, Any]:
         a = (h.start - f.takeoff_utc).total_seconds() / airborne
         b = (h.end - f.takeoff_utc).total_seconds() / airborne
         inner = [p for p, d in zip(pts, flown, strict=True) if a * total < d < b * total]
-        hours.append({"label": f"{h.index:02d}", "state": h.state,
+        # The line follows the plain answer: amber where it says moderate or more, dashed
+        # where it is not known. A record without the answer keeps the hour's own state.
+        state = (h.state if brief.ride is None else "too_early" if h.ride_level is None
+                 else "flagged" if h.ride_level >= 2 else "nothing_found")
+        hours.append({"label": f"{h.index:02d}", "state": state,
                       "line": [lonlat(p) for p in (at(a), *inner, at(b))],
                       "mid": lonlat(at((a + b) / 2))})
     return {"hours": hours,
@@ -905,7 +996,9 @@ def route_map(brief: Brief, mapbox: str | None = None) -> str:
     the lanes below say everything the map shows."""
     if len(brief.route.points) < 2:
         return ""
-    foot = f"<span>{GUESS}</span><span>Numbers are flight hours; flagged stretches are amber</span>"
+    amber = ("flagged stretches" if brief.ride is None
+             else f"hours with {' or '.join(list(brief.ride.meanings)[2:])} turbulence")
+    foot = f"<span>{GUESS}</span><span data-ride>Numbers are flight hours; {amber} are amber</span>"
     f = brief.flight
     label = f"Route from {e(f.origin.code)} to {e(f.destination.code)}"
     if not mapbox:

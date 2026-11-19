@@ -47,6 +47,13 @@ MAKERS = {"BOEING": "B", "AIRBUS": "A", "EMBRAER": "E", "BOMBARDIER": "", "CANAD
 HELP = "Use an ICAO type code such as AT72 or A320, or the word turboprop, jet or piston"
 
 
+# Weight classes as NOAA's turbulence thresholds use them (maximum take-off weight): heavy is
+# over 300,000 lb, light under 15,500 lb, medium between. Own reading of the types: the
+# wide-body families are heavy (the 757 is not, at about 255,000 lb).
+HEAVY = re.compile(r"^(B7[4678]|7[4678]7|A3[03458]|A310|MD11|DC10|IL[89]6|L101|A124|A225)")
+LIGHT_TYPES = {"C208", "DHC6", "L410", "D228", "PC12", "BE20"}
+
+
 class UnknownAircraft(ValueError):
     """What was typed is not an aircraft type this project can place. The message is for the
     user; the caller may go on without a type."""
@@ -136,3 +143,13 @@ def lookup(text: str, table: RouteTable) -> Aircraft:
     if found:
         return found
     raise UnknownAircraft(f"'{text.strip()}' is not an aircraft type this brief knows. {HELP}")
+
+
+def weight_class(aircraft: Aircraft | None) -> str:
+    """light, medium or heavy, for NOAA's turbulence names. No aircraft given: medium."""
+    if aircraft is None:
+        return "medium"
+    code = aircraft.code.upper().replace(" ", "")
+    if aircraft.kind == "piston" or code in LIGHT_TYPES:
+        return "light"
+    return "heavy" if aircraft.kind == "jet" and HEAVY.match(code) else "medium"
