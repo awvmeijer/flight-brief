@@ -11,3 +11,5 @@ __pycache__/
 # Switzer may not be redistributed (ITF Free Font License); see docs/UI.md
 /src/flight_brief/static/straat/fonts/switzer-*
 /src/flight_brief/static/straat/fonts/SWITZER-LICENSE.md
+.vercel
+.env*
