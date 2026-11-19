@@ -7,3 +7,7 @@ __pycache__/
 .env.*
 /data/
 .gstack/
+
+# Switzer may not be redistributed (ITF Free Font License); see docs/UI.md
+/src/flight_brief/static/straat/fonts/switzer-*
+/src/flight_brief/static/straat/fonts/SWITZER-LICENSE.md

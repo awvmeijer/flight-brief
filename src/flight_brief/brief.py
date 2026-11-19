@@ -318,7 +318,8 @@ def defaults(distance: float) -> tuple[int, float]:
 
 def make_flight(code: str, leg: Leg, departure: datetime, cruise_fl: int | None = None,
                 groundspeed_kt: float | None = None, arrival: datetime | None = None,
-                aircraft: Aircraft | None = None) -> PassengerFlight:
+                aircraft: Aircraft | None = None,
+                noted: list[str] | None = None) -> PassengerFlight:
     """`departure` and `arrival` are gate times. However the groundspeed is found, the
     flight is airborne from `TAXI_OUT` after departure, at one groundspeed, and reaches the
     gate `TAXI_IN` after landing. The returned flight's `departure` is the take-off time.
@@ -326,7 +327,8 @@ def make_flight(code: str, leg: Leg, departure: datetime, cruise_fl: int | None 
     Where each number comes from, first match wins. Groundspeed: the arrival time, then a
     typed groundspeed, then the aircraft type, then the distance band. Cruise level: a typed
     level, then the aircraft type, then the distance band. A jet type has no figure of its
-    own, so it leaves the distance bands in place."""
+    own, so it leaves the distance bands in place. `noted` are lines the caller adds to the
+    assumptions, such as a typed aircraft type that was not recognised."""
     a, b = leg.origin, leg.destination
     distance = distance_nm(a.lat, a.lon, b.lat, b.lon)
     fl, kt = defaults(distance)
@@ -378,6 +380,7 @@ def make_flight(code: str, leg: Leg, departure: datetime, cruise_fl: int | None 
         GROUND,
         "Route is a great-circle guess, not the filed route",
         times,
+        *(noted or []),
     ]
     return PassengerFlight(
         flight_id=code, origin=a.code, destination=b.code, departure=departure + TAXI_OUT,
@@ -740,11 +743,13 @@ def _summary(hours: list[Hour]) -> str:
 def make_brief(code: str, leg: Leg, day: date, departure: datetime, as_of: datetime,
                root: Path, callsign: str | None = None, cruise_fl: int | None = None,
                groundspeed_kt: float | None = None, arrival: datetime | None = None,
-               aircraft: Aircraft | None = None, tiles: TileSource | None = None) -> Brief:
+               aircraft: Aircraft | None = None, tiles: TileSource | None = None,
+               noted: list[str] | None = None) -> Brief:
     """The brief for one leg as known at `as_of`, read from the snapshot store at `root`.
     `departure` and the optional `arrival` are the gate times the user typed. With `tiles`,
     the wind-shear index and GTG are read too, and the brief reaches as far as the index."""
-    flight = make_flight(code, leg, departure, cruise_fl, groundspeed_kt, arrival, aircraft)
+    flight = make_flight(code, leg, departure, cruise_fl, groundspeed_kt, arrival, aircraft,
+                         noted)
     points = timeline(flight)
     typed = arrival is not None
     # Gate to gate is `departure` to `arrival`; the hours of the brief run take-off to landing.

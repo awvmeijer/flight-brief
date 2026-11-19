@@ -75,7 +75,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--from", dest="origin", help="origin airport, when the number does not map")
     parser.add_argument("--to", dest="destination", help="destination airport")
     parser.add_argument("--aircraft", help="aircraft type: an ICAO code such as AT72 or A320, "
-                                           "or turboprop, jet or piston. Sets the default "
+                                           "a name such as 777 or 'ATR 72-600', or turboprop, "
+                                           "jet or piston. Sets the default "
                                            "cruise level and groundspeed; --arr, --gs and "
                                            "--fl each take precedence over it")
     parser.add_argument("--fl", type=int, help="cruise flight level, instead of the default")
