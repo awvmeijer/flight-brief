@@ -2,7 +2,9 @@
 
 For each GFS run the job fetches winds and heights at four pressure levels for
 forecast hours 6 to 54, computes the index in three layers, and saves the
-highest value within 0.5 degree of every grid point as one compact tile. Each
+highest value within 0.5 degree of every grid point as one compact tile. The
+same winds at whole degrees, and how high the model's storm clouds reach, go
+into a second small tile beside it (forecast/wx_tiles.py). Each
 start saves every 00/06/12/18Z run of the last two days that is complete on
 NOAA's public AWS bucket and not yet in the store, oldest first, so a late or
 skipped schedule loses nothing.
@@ -22,6 +24,7 @@ import numpy as np
 
 from ..forecast import ellrod, grib, heartbeat, sources
 from ..forecast import shear_tiles as st
+from ..forecast import wx_tiles as wx
 from ..forecast.rangeget import fetch_messages
 from ..forecast.store import open_store
 
@@ -58,14 +61,25 @@ def run_is_ready(run: dt.datetime) -> bool:
     return sources.exists(sources.gfs_url(run, READY_HOUR) + ".idx")
 
 
+CTOP = ("CTOP", 0)   # the key of the convective cloud top among one hour's fields
+
+
 def fetch_hour(run: dt.datetime, hour: int) -> tuple[dict, int, int, float]:
-    """Winds and heights of one forecast hour: ({(variable, hPa): array}, bytes, requests, seconds)."""
-    got = fetch_messages(sources.gfs_url(run, hour), sources.gfs_wants(), pause=PAUSE_S)
+    """Winds and heights of one forecast hour: ({(variable, hPa): array}, bytes, requests, seconds).
+
+    The convective cloud top comes along under the key ``CTOP`` when the run has it. The index
+    does not need it, so a run without it is fetched without it and said so.
+    """
+    url = sources.gfs_url(run, hour)
+    try:
+        got = fetch_messages(url, [*sources.gfs_wants(), sources.GFS_CTOP_WANT], pause=PAUSE_S)
+    except LookupError as exc:
+        print(f"{run:%Y-%m-%d %HZ} f{hour:03d}: no convective cloud top ({exc}); winds only")
+        got = fetch_messages(url, sources.gfs_wants(), pause=PAUSE_S)
     fields = {}
     for i, m in enumerate(grib.decode(got.data)):
-        if m.param not in _NAME_OF or m.type_of_level != "isobaricInhPa" or m.forecast_time != hour:
-            raise ValueError(f"unexpected message {m.param} {m.type_of_level} "
-                             f"+{m.forecast_time} h in {run} f{hour:03d}")
+        if m.forecast_time != hour:
+            raise ValueError(f"unexpected message {m.param} +{m.forecast_time} h in {run} f{hour:03d}")
         if (m.data_date, m.data_time) != (int(f"{run:%Y%m%d}"), run.hour * 100):
             raise ValueError(f"file for {run} holds run {m.data_date} {m.data_time:04d}")
         if (m.grid_type, m.ny, m.nx) != ("regular_ll", st.NJ, st.NI):
@@ -74,8 +88,13 @@ def fetch_hour(run: dt.datetime, hour: int) -> tuple[dict, int, int, float]:
             lat, lon = grib.grid_latlon(m)
             if (lat[0, 0], lat[-1, 0], lon[0, 0], lon[0, 1]) != (90.0, -90.0, 0.0, st.GRID_DEG):
                 raise ValueError("grid does not start at 90N 0E running south and east")
-        fields[(_NAME_OF[m.param], m.level)] = m.values
-    if set(fields) != {(v, lv) for v in sources.GFS_VARS for lv in sources.GFS_LEVELS_HPA}:
+        if m.param == sources.GFS_CTOP_PARAM and m.type_of_level != "isobaricInhPa":
+            fields[CTOP] = m.values
+        elif m.param in _NAME_OF and m.type_of_level == "isobaricInhPa":
+            fields[(_NAME_OF[m.param], m.level)] = m.values
+        else:
+            raise ValueError(f"unexpected message {m.param} {m.type_of_level} in {run} f{hour:03d}")
+    if set(fields) - {CTOP} != {(v, lv) for v in sources.GFS_VARS for lv in sources.GFS_LEVELS_HPA}:
         raise ValueError(f"{run} f{hour:03d}: got {sorted(fields)}")
     return fields, len(got.data), got.requests, got.seconds
 
@@ -87,11 +106,22 @@ def layer_index(fields: dict, lo: int, hi: int) -> np.ndarray:
 
 
 def build_tile(run: dt.datetime, hours=st.FORECAST_HOURS, *, fetch=None) -> tuple[st.ShearTile, dict]:
-    """One forecast hour at a time, so peak memory is one hour's twelve fields plus the tile."""
+    """The wind-shear tile alone; see `build_tiles`."""
+    tile, _, stats = build_tiles(run, hours, fetch=fetch)
+    return tile, stats
+
+
+def build_tiles(run: dt.datetime, hours=st.FORECAST_HOURS, *,
+                fetch=None) -> tuple[st.ShearTile, wx.WxTile, dict]:
+    """Both tiles of a run from one pass over its forecast hours.
+
+    One forecast hour at a time, so peak memory is one hour's fields plus the tiles.
+    """
     fetch = fetch or fetch_hour
     hours = list(hours)
     out = np.full((len(hours), len(ellrod.LAYERS), st.NJ, st.NI), st.MISSING, np.uint8)
-    stats = {"bytes": 0, "requests": 0, "fetch_s": 0.0, "max": 0.0, "clipped": 0}
+    wind_u, wind_v, top = wx.empty(len(hours))
+    stats = {"bytes": 0, "requests": 0, "fetch_s": 0.0, "max": 0.0, "clipped": 0, "tops": 0}
     for h_i, hour in enumerate(hours):
         fields, nbytes, requests, seconds = fetch(run, hour)
         stats["bytes"] += nbytes
@@ -102,7 +132,33 @@ def build_tile(run: dt.datetime, hours=st.FORECAST_HOURS, *, fetch=None) -> tupl
             out[h_i, l_i] = st.quantise(nb)
             stats["max"] = max(stats["max"], float(np.nanmax(nb)))
             stats["clipped"] += int((nb >= st.STEP * (st.MISSING - 1)).sum())
+            wind_u[h_i, l_i] = wx.quantise_wind(0.5 * (fields[("UGRD", lo)] + fields[("UGRD", hi)]))
+            wind_v[h_i, l_i] = wx.quantise_wind(0.5 * (fields[("VGRD", lo)] + fields[("VGRD", hi)]))
+        if CTOP in fields:
+            top[h_i] = wx.quantise_top(fields[CTOP])
+            stats["tops"] += 1
         del fields
+    wx_meta = {
+        "format": wx.FORMAT,
+        "source": "NOAA GFS 0.25 degree, public AWS bucket: winds at pressure levels, and "
+                  "pressure at the convective cloud top level",
+        "url_pattern": sources.gfs_url(run, 0).replace("f000", "fFFF"),
+        "run": f"{run:%Y-%m-%dT%H:00Z}",
+        "wind": "mean of the two pressure levels of each layer, toward east (u) and north (v), "
+                "at every whole degree",
+        "wind_step_kt": wx.WIND_STEP_KT, "wind_missing": wx.WIND_MISSING,
+        "top": "highest convective cloud top within 0.5 degree as a standard-atmosphere flight "
+               "level; where the model expects deep convection, not where a storm cell will be",
+        "top_step_fl": wx.TOP_STEP_FL, "top_none": wx.TOP_NONE, "top_missing": wx.TOP_MISSING,
+        "hours_with_tops": stats["tops"],
+        "layers": [{"hpa": [lo, hi], "flight_level": fl} for (lo, hi), fl in ellrod.LAYERS],
+        "grids": {"wind": {"nj": wx.WNJ, "ni": wx.WNI, "step_deg": wx.WIND_DEG},
+                  "top": {"nj": wx.TNJ, "ni": wx.TNI, "step_deg": wx.TOP_DEG},
+                  "lat_first": 90.0, "lon_first": 0.0, "rows": "north to south",
+                  "columns": "west to east, wrapping"},
+        "saved_at": f"{dt.datetime.now(dt.timezone.utc):%Y-%m-%dT%H:%M:%SZ}",
+    }
+    wx_tile = wx.WxTile(wind_u, wind_v, top, hours, list(st.LAYER_FLS), wx_meta)
     meta = {
         "format": st.FORMAT,
         "source": "NOAA GFS 0.25 degree pressure-level winds and heights, public AWS bucket",
@@ -124,7 +180,7 @@ def build_tile(run: dt.datetime, hours=st.FORECAST_HOURS, *, fetch=None) -> tupl
                  "columns": "west to east, wrapping", "max_abs_lat": st.MAX_LAT},
         "saved_at": f"{dt.datetime.now(dt.timezone.utc):%Y-%m-%dT%H:%M:%SZ}",
     }
-    return st.ShearTile(out, hours, list(st.LAYER_FLS), meta), stats
+    return st.ShearTile(out, hours, list(st.LAYER_FLS), meta), wx_tile, stats
 
 
 def save_missing(store, now: dt.datetime, *, max_runs: int = 8, hours=st.FORECAST_HOURS,
@@ -156,7 +212,7 @@ def save_missing(store, now: dt.datetime, *, max_runs: int = 8, hours=st.FORECAS
             break
         t0 = time.monotonic()
         try:
-            tile, stats = build_tile(run, hours, fetch=fetch)
+            tile, wx_tile, stats = build_tiles(run, hours, fetch=fetch)
         except urllib.error.HTTPError as e:
             # The index of the last hour can be up a moment before an earlier file is.
             # Skip the run; the next start picks it up.
@@ -166,6 +222,10 @@ def save_missing(store, now: dt.datetime, *, max_runs: int = 8, hours=st.FORECAS
             skipped.append(run)
             continue
         data = tile.to_bytes()
+        # The wind-shear tile's name is what marks a run as saved, so it goes in last; a start
+        # that died between the two writes the other tile again.
+        wx_data = wx_tile.to_bytes()
+        store.put(group_of(run), wx.tile_name(run), wx_data, overwrite=True)
         store.put(group_of(run), st.tile_name(run), data)
         saved.append(run)
         # From a histogram of the counts, one forecast hour at a time: the whole tile as
@@ -180,6 +240,10 @@ def save_missing(store, now: dt.datetime, *, max_runs: int = 8, hours=st.FORECAS
               f"p99 {p99:.1f} max {stats['max']:.1f} | "
               f"at or above 8: {above[8]:.1f}%  12: {above[12]:.1f}% | "
               f"{stats['clipped']} cell(s) clipped")
+        print(f"{run:%Y-%m-%d %HZ}: saved {wx.tile_name(run)} {len(wx_data) / 1e6:.2f} MB | "
+              f"cloud tops in {stats['tops']} of {len(tile.forecast_hours)} hours | "
+              f"{100 * np.count_nonzero((wx_tile.top > wx.TOP_NONE) & (wx_tile.top < wx.TOP_MISSING)) / wx_tile.top.size:.1f}% "
+              f"of cells have a convective cloud near")
     return saved, skipped, stored
 
 
@@ -194,6 +258,7 @@ def verify(store, run: dt.datetime, *, fetch=None) -> bool:
     """
     fetch = fetch or fetch_hour
     tile = st.ShearTile.from_bytes(store.get(group_of(run), st.tile_name(run)))
+    wx_tile = wx.WxTile.from_bytes(store.get(group_of(run), wx.tile_name(run)))
     step, ok = tile.meta["step"], True
     top = step * (st.MISSING - 1)
     print(f"read back {st.tile_name(run)}: ti1 {tile.ti1.shape}, hours {tile.forecast_hours}, "
@@ -216,6 +281,35 @@ def verify(store, run: dt.datetime, *, fetch=None) -> bool:
             ok &= good
             print(f"  +{hour:02d} h FL{fl} {name:12s} direct {near:6.2f}  point {direct[iy, ix]:6.2f}  "
                   f"tile {'none' if got is None else format(got[0], '6.2f')}  {'ok' if good else 'MISMATCH'}")
+        ok &= _verify_wx(wx_tile, fields, run, hour, l_i)
+    return ok
+
+
+def _verify_wx(tile: wx.WxTile, fields: dict, run: dt.datetime, hour: int, l_i: int) -> bool:
+    """The saved wind at each sample point against the fetched fields at the nearest whole
+    degree, and the saved cloud top against the highest top found by direct indexing."""
+    (lo, hi), fl = ellrod.LAYERS[l_i]
+    at, ok = run + dt.timedelta(hours=hour), True
+    for name, plat, plon in CHECK_POINTS:
+        iy, ix = int(round(90 - plat)) * wx.WIND_EVERY, (int(round(plon % 360)) % 360) * wx.WIND_EVERY
+        want = tuple(float(np.rint(0.5 * (fields[(var, lo)][iy, ix] + fields[(var, hi)][iy, ix])
+                                   * wx.KT_PER_MS / wx.WIND_STEP_KT) * wx.WIND_STEP_KT)
+                     for var in ("UGRD", "VGRD"))
+        got = tile.wind(plat, plon, fl, at)
+        good = got is not None and got[:2] == want and got[2:] == (fl, hour)
+        text = f"wind {want[0]:+5.0f} {want[1]:+5.0f} kt  tile {'none' if got is None else f'{got[0]:+5.0f} {got[1]:+5.0f}'}"
+        if CTOP in fields:
+            ty = int(round((90 - plat) / wx.TOP_DEG)) * wx.TOP_EVERY
+            tx = (int(round((plon % 360) / wx.TOP_DEG)) % wx.TNI) * wx.TOP_EVERY
+            near = fields[CTOP][max(0, ty - 2):ty + 3][:, [(tx + q) % st.NI for q in range(-2, 3)]]
+            top_want = (None if np.isnan(near).all()
+                        else int(max(1, np.rint(float(wx.pressure_to_fl(np.nanmin(near))) / wx.TOP_STEP_FL)))
+                        * wx.TOP_STEP_FL)
+            top_got = tile.storm_top(plat, plon, at)
+            good &= top_got == (top_want, hour)
+            text += f"  cloud top {top_want}  tile {None if top_got is None else top_got[0]}"
+        ok &= good
+        print(f"  +{hour:02d} h FL{fl} {name:12s} {text}  {'ok' if good else 'MISMATCH'}")
     return ok
 
 

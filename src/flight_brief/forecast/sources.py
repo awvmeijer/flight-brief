@@ -56,6 +56,12 @@ def gfs_wants() -> list[tuple[str, str]]:
     return [(v, f"{lv} mb") for v in GFS_VARS for lv in GFS_LEVELS_HPA]
 
 
+# How high the model's storm clouds reach: pressure at the convective cloud top. Missing where
+# the model has no convective cloud. Wanted by the wind and storm-cloud tile, not by the index.
+GFS_CTOP_PARAM = (0, 3, 0)
+GFS_CTOP_WANT = ("PRES", "convective cloud top level")
+
+
 # --- Finding a run that is fully posted -----------------------------------------------------
 
 def exists(url: str) -> bool:
