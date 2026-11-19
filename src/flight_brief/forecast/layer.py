@@ -16,7 +16,7 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
-from . import shear_tiles
+from . import shear_tiles, wx_tiles
 from .tiles import Tile, tile_name
 
 RELEASES = "https://github.com/awvmeijer/flight-brief/releases/download"
@@ -116,3 +116,10 @@ class TileSource:
         return self._newest(runs_before(as_of, SHEAR_LAG, SHEAR_LOOK_BACK),
                             lambda run: f"shear-tiles-{run:%Y-%m}", shear_tiles.tile_name,
                             shear_tiles.ShearTile.from_bytes)
+
+    def wx(self, as_of: dt.datetime):
+        """The newest wind and storm-cloud tile known at `as_of`: (tile, run, url). Runs saved
+        before the job wrote this tile have none."""
+        return self._newest(runs_before(as_of, SHEAR_LAG, SHEAR_LOOK_BACK),
+                            lambda run: f"shear-tiles-{run:%Y-%m}", wx_tiles.tile_name,
+                            wx_tiles.WxTile.from_bytes)

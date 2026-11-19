@@ -5,6 +5,7 @@ import pytest
 
 from flight_brief.forecast import ellrod, heartbeat
 from flight_brief.forecast import shear_tiles as st
+from flight_brief.forecast import wx_tiles as wx
 from flight_brief.forecast.store import LocalStore
 from flight_brief.jobs import shear_tiles as job
 
@@ -323,7 +324,8 @@ def test_the_job_saves_ready_runs_oldest_first_skips_stored_ones_and_writes_a_he
     assert saved == [runs[0], runs[2]] and skipped == [] and stored == [runs[1]]
     assert runs[1] not in asked and runs[-1] in asked           # stored runs are not looked up again
     assert [c[0] for c in fetch.calls] == [runs[0], runs[2]]    # max_runs stops the third
-    assert store.names("shear-tiles-2026-11") == {st.tile_name(r) for r in runs[:3]}
+    assert store.names("shear-tiles-2026-11") == ({st.tile_name(r) for r in runs[:3]}
+                                                  | {wx.tile_name(runs[0]), wx.tile_name(runs[2])})
     assert store.get("shear-tiles-2026-11", st.tile_name(runs[1])) == b"already here"
     tile = st.ShearTile.from_bytes(store.get("shear-tiles-2026-11", st.tile_name(runs[2])))
     assert tile.run == runs[2] and tile.forecast_hours == [6]
@@ -360,7 +362,7 @@ def test_main_writes_the_heartbeat_after_a_start_that_ends_well(tmp_path, monkey
     assert record["job"] == "shear-tiles" and len(record["saved"]) == 1 and record["skipped"] == []
     assert record["newest_run"] == record["saved"][0]
     out = capsys.readouterr().out
-    assert "MISMATCH" not in out and out.count("  ok") == 18 and "peak memory" in out
+    assert "MISMATCH" not in out and out.count("  ok") == 36 and "peak memory" in out
 
 
 def test_no_heartbeat_when_the_start_fails(tmp_path, monkeypatch):
