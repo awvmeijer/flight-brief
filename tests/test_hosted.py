@@ -235,6 +235,6 @@ def test_a_rewritten_request_reaches_its_page(table: vrs.RouteTable, tmp_path: P
     monkeypatch.setattr(hosted, "_app", web.create_app(
         table, snapshots=None, cache=tmp_path / "c", saved=None, behind_proxy=True))
     assert get(hosted.app, "/api/index?__path=/")[0].startswith("200")
-    status, _, body = get(hosted.app, "/api/index?q=amst&__path=/airports")
-    assert status.startswith("200") and "Amsterdam" in body
+    status, headers, body = get(hosted.app, "/api/index?q=singap&__path=/airports")
+    assert status.startswith("200") and "json" in headers["Content-Type"] and "Singapore" in body
     assert get(hosted.app, "/api/index?__path=/nope")[0].startswith("404")
