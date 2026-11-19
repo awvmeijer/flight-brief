@@ -224,7 +224,9 @@ class RouteTable:
             raise FileNotFoundError(
                 f"no route table at {path}; build one with: python -m flight_brief.vrs --out {path}")
         self.path = path
-        self.db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        # Read-only, and read from whichever thread serves a request: a hosted copy does not
+        # promise the thread that opened it.
+        self.db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
         self._airports: list[tuple[Airport, str, str, int]] | None = None
 
     def meta(self, key: str) -> str | None:

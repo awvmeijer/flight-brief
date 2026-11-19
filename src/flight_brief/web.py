@@ -483,8 +483,11 @@ def create_app(table: RouteTable, *, snapshots: Path | None, cache: Path, saved:
         saved_url = None
         if saved is not None and result.status == "ok":
             ident = result.identity
-            saved_url = (f"/f/{ident.code}/{ident.date.isoformat()}/{ident.leg}/saved/"
-                         f"{save(saved, result, req)}")
+            try:
+                saved_url = (f"/f/{ident.code}/{ident.date.isoformat()}/{ident.leg}/saved/"
+                             f"{save(saved, result, req)}")
+            except OSError:
+                saved_url = None   # the brief is still shown; it is only not kept
         return html(200, page.render_page(result, saved_url=saved_url, mapbox=mapbox), NOINDEX,
                     ("Cache-Control", "no-store"))
 

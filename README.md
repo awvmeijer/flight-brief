@@ -64,6 +64,25 @@ Two optional keys, read from the environment and from nowhere else:
 - **Saved briefs:** with `--saved`, every brief that renders is written once with its inputs to `<dir>/<code>/<date>/leg<leg>-<issued>-<hash>.json`, where the hash is of what was typed. `/f/{code}/{date}/{leg}/saved/{issued}-{hash}` draws that record again without reading or fetching anything, and says it is a saved brief and when it was issued.
 - **Limits:** every value is checked against a strict pattern before anything else happens; 30 brief, route and look-up pages per address per 10 minutes, kept in memory; those pages carry `noindex`; a Content-Security-Policy allows the app's own files and Mapbox's, and no inline style or script. `--behind-proxy` takes the address from `X-Forwarded-For`. The server is `wsgiref`, one request at a time.
 
+## Hosting on Vercel
+
+The same page runs as one Vercel function: `api/index.py` is the entry point, `vercel.json` sends every address to it, and `src/flight_brief/hosted.py` puts the app together. What differs from a laptop:
+
+- **Route table:** it is not in git. The `route-table` workflow builds it every Monday and publishes it as the release asset `route-table/vrs.sqlite.gz`; a hosted copy downloads and unpacks it into `/tmp` when it starts (about 14 MB).
+- **Fetched weather and forecast tiles** go to `/tmp` and are fetched again by the next instance.
+- **Saved briefs and the schedule's kept answers and unit counter** go to a private [Vercel Blob](https://vercel.com/docs/vercel-blob) store, under `flight-brief/`. The store is connected to the project, which sets `BLOB_READ_WRITE_TOKEN`. Without it nothing is saved.
+- **Schedules need the store.** The unit counter is what stops look-ups before the month's free units are gone, and only the store counts across instances. With `AERODATABOX_KEY` but no store, schedules stay off. A call that cannot be counted is not sent.
+- **The rate limit** is per instance and in memory, so on a hosted copy it is a brake, not a guarantee.
+- **Fonts:** Switzer's licence keeps its files out of git, so a hosted copy shows Inter or the system font.
+- **The GRIB decoder** (`eccodes`) is needed only by the tile jobs. It is in the `dev` group and the `jobs` extra, not in the dependencies a hosted copy installs.
+
+| Variable | Set where | What it does |
+|---|---|---|
+| `BLOB_READ_WRITE_TOKEN` | by Vercel, when the Blob store is connected | saved briefs, schedule counter |
+| `AERODATABOX_KEY` | project settings, by hand | scheduled flights (only with the store) |
+| `MAPBOX_TOKEN` | project settings, by hand | the maps; limit the token to the site's address at Mapbox |
+| `FLIGHT_BRIEF_ROUTES_URL` | optional | another place to get the route table from |
+
 ## What runs
 
 | Workflow | When | What it does |
@@ -71,6 +90,7 @@ Two optional keys, read from the environment and from nowhere else:
 | `decode-check` | pull requests, manual | Unit tests, then a live check on a Linux runner: fetches GFS 0.25 degree and GTG messages by byte range, decodes them with eccodes, computes the Ellrod TI1 index, prints timing and peak memory |
 | `gtg-tiles` | 01:47, 07:47, 13:47, 19:47 UTC | Saves NOAA's GTG turbulence forecast for the contiguous US as compact tiles, then reads the newest one back and compares it with a direct decode at six points |
 | `shear-tiles` | 04:37, 10:37, 16:37, 22:37 UTC | Computes the Ellrod TI1 wind-shear index from each GFS run, worldwide, and saves the highest value within 0.5 degree of every grid point as one compact tile, then reads the newest one back and compares it with a direct computation at six points |
+| `route-table` | Mondays 05:23 UTC | Builds the route table and publishes it as `route-table/vrs.sqlite.gz` for the hosted page, after reading it back |
 
 ## GTG tiles
 

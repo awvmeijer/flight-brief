@@ -203,7 +203,10 @@ class Schedule:
     def _call(self, path: str, params: dict[str, str]) -> list[Any] | dict[str, Any] | Reason:
         """One call, counted before it is sent. The reply's JSON, an empty list when the
         source answers that it has nothing, or the reason there is no answer."""
-        self._write(self._ledger(), {"spent": self.units_spent() + UNITS})
+        try:
+            self._write(self._ledger(), {"spent": self.units_spent() + UNITS})
+        except OSError:
+            return "failed"   # a call that cannot be counted is not sent
         headers = {"X-RapidAPI-Key": self.key or "", "X-RapidAPI-Host": HOST,
                    "Accept": "application/json", "User-Agent": USER_AGENT}
         try:
@@ -238,16 +241,24 @@ class Schedule:
             return None
 
     def _keep(self, path: Path, found: list[Scheduled]) -> None:
-        self._write(path, {"fetched_at": self.now().isoformat(timespec="seconds"),
-                           "source": NAME,
-                           "flights": [f.model_dump(mode="json", exclude_none=True)
-                                       for f in found]})
-        self._forget()
+        try:
+            self._write(path, {"fetched_at": self.now().isoformat(timespec="seconds"),
+                               "source": NAME,
+                               "flights": [f.model_dump(mode="json", exclude_none=True)
+                                           for f in found]})
+            self._forget()
+        except OSError:
+            pass   # the answer is still given; it is only not kept
 
     def _forget(self) -> None:
         """Delete every kept schedule older than `KEEP`. A file that cannot be read goes too."""
         for path in self.root.glob("*.json"):
             if path.name.startswith("units-"):
+                continue
+            # A store that knows when a file was written (blobstore.BlobPath) spares the
+            # read: a file written less than `KEEP` ago cannot hold an older answer.
+            written = getattr(path, "modified", None)
+            if written is not None and self.now() - written < KEEP:
                 continue
             try:
                 record = json.loads(path.read_text(encoding="utf-8"))
