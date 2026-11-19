@@ -28,7 +28,7 @@ from .service import Problem
 from .vrs import Airport, RouteFlight
 
 SITE = "Flight Brief"
-ASSETS = "2"  # bump when a file under static/ changes, so browsers fetch it again
+ASSETS = "3"  # bump when a file under static/ changes, so browsers fetch it again
 MAPBOX_GL = "https://api.mapbox.com/mapbox-gl-js/v3.33.0"
 STATE_WORDS = {"flagged": "flagged", "nothing_found": "nothing found", "too_early": "too early",
                "not_covered": "not covered", "stale": "source stale",

@@ -31,6 +31,22 @@
   });
   map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-right");
 
+  /* Mapbox answers 401 or 403 when the token is wrong, or is limited to other sites than this
+     one. Then there is no map to show, and a grey globe would say nothing: say why instead. */
+  var refused = false;
+  map.on("error", function (ev) {
+    var status = ev && ev.error && ev.error.status;
+    if (refused || (status !== 401 && status !== 403)) { return; }
+    refused = true;
+    map.remove();
+    holder.classList.remove("is-live");
+    holder.textContent = "";
+    var p = document.createElement("p");
+    p.textContent = "Mapbox refused this page's token (answer " + status + "). The token may be " +
+      "limited to other site addresses than " + window.location.origin + ", or it may be mistyped.";
+    holder.appendChild(p);
+  });
+
   function features(pick) {
     return {
       type: "FeatureCollection",
